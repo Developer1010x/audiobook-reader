@@ -1,0 +1,40 @@
+# ── HARD PRIVACY GUARD — do not weaken ──────────────────────────────────────
+# This app READS a personal book library at runtime. No book content, and no
+# path to it, may ever be committed. These rules are belt-and-suspenders so an
+# accidental `git add .` cannot leak the library. See README §Privacy.
+
+# Every common book / document format, anywhere in the tree:
+*.pdf
+*.epub
+*.mobi
+*.azw
+*.azw3
+*.djvu
+*.cbz
+*.cbr
+*.fb2
+*.txt          # books often arrive as .txt — code uses .py, so this is safe to block
+*.md.book      # any exported book text
+
+# Any local data / library / cache directory the app might create:
+/data/
+/library/
+/books/
+/cache/
+/audio_cache/
+*.wav
+*.mp3
+*.ogg
+
+# The real config (which contains the absolute path to your library) is local-only.
+# Only config.example.toml is committed.
+config.toml
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/

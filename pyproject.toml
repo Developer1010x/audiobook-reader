@@ -1,0 +1,17 @@
+[project]
+name = "audiobook-reader"
+version = "0.0.1"
+description = "Private local audiobook + reader over a personal book library (code only; never bundles books)"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+# Add as each layer is implemented:
+#   reader:  pymupdf, ebooklib
+#   tts:     pyttsx3   (offline)
+#   dev:     pytest, ruff
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

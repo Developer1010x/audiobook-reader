@@ -1,0 +1,17 @@
+# Copy this file to config.toml (which is git-ignored) and set your real library path.
+# The app only ever READS from this path — it never writes book content back or commits it.
+
+[library]
+# Absolute path to your book library. Example only — set your own in config.toml.
+path = "/absolute/path/to/your/books"
+# File types to treat as books.
+extensions = ["pdf", "epub", "mobi", "djvu"]
+
+[tts]
+# "system" uses an offline OS voice; no cloud. (Engine wired up later.)
+engine = "system"
+
+[summary]
+# Local Ollama keeps book text on-device. Never point this at an external API for book content.
+provider = "ollama"
+model = "llama3.2"
