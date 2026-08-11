@@ -33,6 +33,10 @@ class CoverService {
 
   static int _active = 0;
 
+  /// Deliberately far below the CPU pool: this is background decoration, and it
+  /// must never compete with the book in front of the user.
+  static const _renderSlots = 2;
+
   static Future<Directory> _dir() async {
     if (_cacheDir != null) return _cacheDir!;
     final base = await getApplicationCacheDirectory();
@@ -112,7 +116,10 @@ class CoverService {
   /// matter more than the ones they have already scrolled past; those keep
   /// their slot in the queue and are picked up once the burst settles.
   static void _pump() {
-    while (_active < Concurrency.cpuPool && _queue.isNotEmpty) {
+    // Two, not cpuPool. Each render opens and parses a whole PDF; six at once
+    // on 20 MB books starved the document the user was actually trying to open,
+    // turning a 0.04 s parse into a 16-second wait.
+    while (_active < _renderSlots && _queue.isNotEmpty) {
       _active++;
       unawaited(_run(_queue.removeLast()));
     }

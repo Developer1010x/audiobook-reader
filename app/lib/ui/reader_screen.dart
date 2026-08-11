@@ -7,6 +7,7 @@ import '../models/annotation.dart';
 import '../models/bookmark.dart';
 import '../services/chapter_index.dart';
 import '../services/classifier.dart';
+import '../services/document_cache.dart';
 import '../services/ocr_service.dart';
 import '../services/reader_service.dart';
 import '../services/piper_tts.dart';
@@ -54,6 +55,13 @@ class _ReaderScreenState extends State<ReaderScreen>
   bool _searching = false;
   String? _busy;
   bool _showOutline = false;
+
+  /// AI assist is a docked panel, not a sheet over the page.
+  ///
+  /// A summary is meant to be read *against* the passage it came from, so
+  /// covering the passage to show it defeats the feature. It sits on the left
+  /// beside the contents panel, where a reader already expects a sidebar.
+  bool _showAi = false;
   late bool _night = widget.settings.nightMode;
 
   /// When on, tapping the page starts reading from that sentence.
@@ -775,15 +783,54 @@ class _ReaderScreenState extends State<ReaderScreen>
   }
 
   void _openSummary() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => SummarySheet(
-        book: widget.book,
-        settings: widget.settings,
-        initialPage: _page,
-        pageCount: _pageCount,
+    setState(() {
+      _showAi = !_showAi;
+      // The two side panels would halve the page between them; opening one
+      // closes the other.
+      if (_showAi) _showOutline = false;
+    });
+  }
+
+  /// The docked assistant. Width is capped so the page never becomes a column.
+  Widget _aiPanel(ThemeData theme) {
+    final width = (MediaQuery.sizeOf(context).width * 0.34).clamp(320.0, 520.0);
+    return SizedBox(
+      width: width,
+      child: Material(
+        color: theme.colorScheme.surfaceContainerLow,
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
+              decoration: BoxDecoration(
+                border: Border(
+                  bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text('AI assist', style: theme.textTheme.titleSmall),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Close',
+                    onPressed: () => setState(() => _showAi = false),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SummarySheet(
+                book: widget.book,
+                settings: widget.settings,
+                initialPage: _page,
+                pageCount: _pageCount,
+                embedded: true,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -800,6 +847,7 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   @override
   void dispose() {
+    DocumentCache.release(widget.book);
     // Before the engine goes: the sleep timer and the keep-awake inhibitor do
     // not ride on the TTS session, so nothing else would ever cancel them.
     disposePlayback();
@@ -891,6 +939,7 @@ class _ReaderScreenState extends State<ReaderScreen>
           child: Row(
             children: [
               if (_showOutline && _outline.isNotEmpty) _outlinePanel(theme),
+              if (_showAi) _aiPanel(theme),
               Expanded(child: _viewer(theme)),
             ],
           ),

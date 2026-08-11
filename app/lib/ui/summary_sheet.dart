@@ -25,6 +25,13 @@ class SummarySheet extends StatefulWidget {
   /// txt/md/epub pass their already-loaded pages in here.
   final Future<String> Function(int start, int end)? textProvider;
 
+  /// True when docked beside the page rather than presented as a sheet.
+  ///
+  /// A docked panel owns no scroll sheet of its own and needs no title — its
+  /// host supplies both — so the layout differs enough to be worth a flag
+  /// rather than a second widget that would drift out of sync.
+  final bool embedded;
+
   const SummarySheet({
     super.key,
     required this.book,
@@ -32,6 +39,7 @@ class SummarySheet extends StatefulWidget {
     required this.initialPage,
     required this.pageCount,
     this.textProvider,
+    this.embedded = false,
   });
 
   @override
@@ -157,6 +165,13 @@ class _SummarySheetState extends State<SummarySheet> {
     final theme = Theme.of(context);
     final provider = _provider;
 
+    if (widget.embedded) {
+      return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: _body(theme, provider),
+      );
+    }
+
     return DraggableScrollableSheet(
       expand: false,
       initialChildSize: 0.8,
@@ -173,7 +188,16 @@ class _SummarySheetState extends State<SummarySheet> {
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.outline)),
           const SizedBox(height: 18),
+          ..._body(theme, provider),
+        ],
+      ),
+    );
+  }
 
+  /// The controls and output, shared by the docked panel and the sheet so the
+  /// two presentations cannot drift apart.
+  List<Widget> _body(ThemeData theme, LlmProvider provider) {
+    return [
           // What to do with the passage — the same pages serve very different
           // purposes, so this is the first choice, not a buried setting.
           Text('What do you need?', style: theme.textTheme.labelLarge),
@@ -301,9 +325,7 @@ class _SummarySheetState extends State<SummarySheet> {
             // asterisks threw that away.
             MarkdownText(_result!),
           ],
-        ],
-      ),
-    );
+    ];
   }
 
   Widget _pageField(String label, int value, ValueChanged<int> onChanged) {

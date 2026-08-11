@@ -2,6 +2,7 @@ import 'package:pdfrx/pdfrx.dart';
 
 import '../models/book.dart';
 import 'classifier.dart';
+import 'document_cache.dart';
 import 'concurrency.dart';
 import 'ocr_service.dart';
 import 'spoken_text.dart';
@@ -36,7 +37,7 @@ class ReaderService {
     bool ocrFallback = false,
     void Function(String stage)? onProgress,
   }) async {
-    final doc = await PdfDocument.openFile(book.path);
+    final doc = await DocumentCache.borrow(book);
     String extracted;
     try {
       if (pageNumber < 1 || pageNumber > doc.pages.length) {
@@ -45,7 +46,7 @@ class ReaderService {
       final text = await doc.pages[pageNumber - 1].loadStructuredText();
       extracted = text.fullText;
     } finally {
-      doc.dispose();
+      DocumentCache.returnHandle(book);
     }
 
     if (extracted.trim().isNotEmpty) return extracted;
@@ -62,15 +63,13 @@ class ReaderService {
   /// The page's text split into sentences, each mapped to its rectangles on the
   /// page — the basis for tap-to-start and the follow-along highlight.
   static Future<PageSpeech> pageSpeech(Book book, int pageNumber) async {
-    final doc = await PdfDocument.openFile(book.path);
-    try {
+    return DocumentCache.use(book, (doc) async {
       if (pageNumber < 1 || pageNumber > doc.pages.length) {
         throw RangeError('Page $pageNumber out of range (1..${doc.pages.length})');
       }
-      return PageSpeech.build(await doc.pages[pageNumber - 1].loadStructuredText());
-    } finally {
-      doc.dispose();
-    }
+      return PageSpeech.build(
+          await doc.pages[pageNumber - 1].loadStructuredText());
+    });
   }
 
   /// True when the page has no embedded text and would need OCR.
@@ -87,7 +86,7 @@ class ReaderService {
     bool ocrFallback = false,
     void Function(String stage)? onProgress,
   }) async {
-    final doc = await PdfDocument.openFile(book.path);
+    final doc = await DocumentCache.borrow(book);
     final int first, last;
     // One slot per page, so text that arrives late — OCR finishing in whatever
     // order the pages happen to complete — still lands in page order.
@@ -110,7 +109,7 @@ class ReaderService {
         }
       }
     } finally {
-      doc.dispose();
+      DocumentCache.returnHandle(book);
     }
 
     if (scanned.isNotEmpty) {
@@ -161,12 +160,7 @@ class ReaderService {
   }
 
   static Future<int> pageCount(Book book) async {
-    final doc = await PdfDocument.openFile(book.path);
-    try {
-      return doc.pages.length;
-    } finally {
-      doc.dispose();
-    }
+    return DocumentCache.use(book, (doc) async => doc.pages.length);
   }
 
   /// Auto-detect whether this is a textbook or a storybook.
@@ -176,7 +170,7 @@ class ReaderService {
   /// carries almost no signal. Only a handful of pages are read, so this stays
   /// fast enough to run on first open.
   static Future<Classification> classify(Book book) async {
-    final doc = await PdfDocument.openFile(book.path);
+    final doc = await DocumentCache.borrow(book);
     final String sample;
     try {
       final n = doc.pages.length;
@@ -205,7 +199,7 @@ class ReaderService {
       }
       sample = buffer.toString();
     } finally {
-      doc.dispose();
+      DocumentCache.returnHandle(book);
     }
 
     // A dozen regexes over several pages of text. On a short sample the isolate

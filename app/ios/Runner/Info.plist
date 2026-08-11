@@ -49,6 +49,17 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Without the audio background mode iOS suspends the process seconds after
+	     the screen locks, so playback stops and the lock-screen controls vanish.
+	     It also permits the app to run in the background ONLY while audio is
+	     actually flowing: an idle gap between sentences long enough to look like
+	     silence gets the process killed, so the pipeline must keep the player fed
+	     rather than pausing between units. No other background mode applies —
+	     synthesis happens on demand, not on a schedule. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

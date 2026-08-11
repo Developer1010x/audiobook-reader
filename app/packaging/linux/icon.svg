@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    The mark: an open book whose right-hand page dissolves into sound.
+
+    The idea the app is actually about is the moment a page becomes a voice, so
+    the two halves are one shape rather than a book with a speaker bolted on.
+    Reading left to right, the spread opens and then breaks into waves — which
+    is also the direction the eye already travels across a page.
+
+    Built from primitives rather than traced paths so it stays crisp at 16px in
+    a taskbar, where a detailed illustration turns to mud.
+  -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6B7AD1"/>
+      <stop offset="1" stop-color="#454FA0"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4E7F5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square ground, matching the platform icon grid. -->
+  <rect x="0" y="0" width="512" height="512" rx="114" fill="url(#ground)"/>
+
+  <!-- Left page: solid, the part that is still text. -->
+  <path d="M96 150
+           C 96 150, 148 124, 244 140
+           L 244 386
+           C 148 370, 96 396, 96 396 Z"
+        fill="url(#paper)"/>
+
+  <!-- Spine shadow, giving the spread a fold rather than two flat rectangles. -->
+  <path d="M244 140 L244 386 L256 372 L256 154 Z" fill="#000000" opacity="0.16"/>
+
+  <!-- Lines of text on the left page, thinning towards the fold. -->
+  <g fill="#8891C4" opacity="0.85">
+    <rect x="126" y="186" width="92" height="11" rx="5.5"/>
+    <rect x="126" y="220" width="104" height="11" rx="5.5"/>
+    <rect x="126" y="254" width="80" height="11" rx="5.5"/>
+    <rect x="126" y="288" width="98" height="11" rx="5.5"/>
+    <rect x="126" y="322" width="66" height="11" rx="5.5"/>
+  </g>
+
+  <!-- Right page: present but receding, because it is becoming sound. -->
+  <path d="M416 150
+           C 416 150, 364 124, 268 140
+           L 268 386
+           C 364 370, 416 396, 416 396 Z"
+        fill="url(#paper)" opacity="0.42"/>
+
+  <!--
+    The waves. Concentric arcs opening rightward, growing in radius and fading —
+    read as sound leaving the page. Arcs, not a speaker cone: a speaker would
+    say "audio player", and this is a reader that speaks.
+  -->
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <path d="M300 208 C 336 246, 336 290, 300 328"
+          stroke-width="20" opacity="0.95"/>
+    <path d="M344 178 C 396 238, 396 298, 344 358"
+          stroke-width="20" opacity="0.66"/>
+    <path d="M388 150 C 456 232, 456 304, 388 386"
+          stroke-width="20" opacity="0.34"/>
+  </g>
+</svg>

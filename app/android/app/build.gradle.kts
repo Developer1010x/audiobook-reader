@@ -24,7 +24,12 @@ android {
         applicationId = "com.personal.audiobook_reader"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // audio_service itself only needs 19, but the plugins it is composed with
+        // do not: audio_session 0.2.4 and flutter_tts 4.2.5 both declare minSdk 24,
+        // and the manifest merger refuses the build below that. Flutter's current
+        // default is also 24, so this changes nothing today — it pins the floor so
+        // a Flutter SDK that lowers its default cannot quietly break the audio stack.
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
