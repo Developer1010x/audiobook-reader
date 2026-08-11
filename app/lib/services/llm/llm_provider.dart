@@ -100,6 +100,28 @@ abstract class LlmProvider {
 ///
 /// A one-line answer overrides the mode's shape entirely — "one-line flashcards"
 /// is incoherent, so the mode prompt is dropped rather than fought with.
+/// Framing applied to every request.
+///
+/// Small local models drift towards generic commentary about the *subject*
+/// rather than the *passage* — "AI models are becoming more powerful" is true
+/// of everything and tells the reader nothing. Naming the failure explicitly is
+/// what stops it.
+const _systemFraming = '''
+You are summarising a specific passage of a book for someone who will rely on
+your summary instead of rereading the page.
+
+Absolute rules:
+- Use ONLY what is in the passage below. Never add outside knowledge, context or
+  opinion, however relevant it seems.
+- Never write a sentence that would be true of any text on this subject. If a
+  point survives deleting the passage, it is worthless — cut it.
+- Keep the author's own terms, names, figures and examples. Specifics are the
+  whole value.
+- Do not open with "This passage discusses..." or close with a summary of your
+  summary. Start with the substance.
+- If the passage is fragmentary or mostly front matter, say so plainly in one
+  line rather than manufacturing structure.''';
+
 String buildPrompt(
   String text, {
   AiMode mode = AiMode.summary,
@@ -108,9 +130,10 @@ String buildPrompt(
 }) {
   final instruction = promptOverride ??
       (length.overridesShape
-          ? 'Summarise the following passage from a book.'
+          ? 'Summarise the passage below.'
           : mode.prompt.replaceAll('{n}', '${length.count}'));
-  return '$instruction\n\n${length.instruction}\n\n---\n\n$text';
+  return '$_systemFraming\n\n$instruction\n\n${length.instruction}\n\n'
+      '--- PASSAGE ---\n$text\n--- END PASSAGE ---';
 }
 
 /// Rough token estimate for accounting when a provider does not report usage.
@@ -133,6 +156,7 @@ Future<LlmResult> openAiCompatible({
   required String prompt,
   required String providerName,
   Map<String, String> extraHeaders = const {},
+  int maxOutputTokens = 1200,
   TokenSink? onDelta,
   CancellationToken? cancel,
 }) async {
@@ -157,6 +181,7 @@ Future<LlmResult> openAiCompatible({
         ],
         // Low but not zero: summarising should be faithful, not creative.
         'temperature': 0.3,
+        'max_tokens': maxOutputTokens,
         'stream': true,
         'stream_options': {'include_usage': true},
       });
@@ -431,7 +456,10 @@ class GeminiProvider extends LlmProvider {
               ]
             }
           ],
-          'generationConfig': {'temperature': 0.3},
+          'generationConfig': {
+            'temperature': 0.3,
+            'maxOutputTokens': length.outputTokenBudget,
+          },
         });
 
       final http.StreamedResponse response;
@@ -528,6 +556,7 @@ abstract class _OpenAiCompatibleProvider extends LlmProvider {
             mode: mode, length: length, promptOverride: promptOverride),
         providerName: name,
         extraHeaders: extraHeaders,
+        maxOutputTokens: length.outputTokenBudget,
         onDelta: onDelta,
         cancel: cancel,
       );

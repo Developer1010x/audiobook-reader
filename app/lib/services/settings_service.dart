@@ -6,6 +6,7 @@ import '../models/annotation.dart';
 import '../models/bookmark.dart';
 import 'llm/ai_mode.dart';
 import 'llm/summary_length.dart';
+import 'sleep_timer.dart';
 
 /// App settings and API keys.
 ///
@@ -163,6 +164,74 @@ class SettingsService {
   String? get musicFolder => _prefs.getString('music_folder');
   Future<void> setMusicFolder(String path) =>
       _prefs.setString('music_folder', path);
+
+  // ── sleep timer ──
+  /// The last duration chosen, pre-selected next time. Re-arming the same
+  /// stretch every night is the common case and deserves to be one tap.
+  int get sleepMinutes => _prefs.getInt('sleep_minutes') ?? 30;
+  Future<void> setSleepMinutes(int minutes) =>
+      _prefs.setInt('sleep_minutes', minutes.clamp(1, 24 * 60));
+
+  /// The last mode chosen. [SleepMode.off] is never stored — cancelling a timer
+  /// says nothing about what the user wants next time.
+  SleepMode get sleepMode {
+    final v = _prefs.getString('sleep_mode');
+    return SleepMode.values.firstWhere(
+        (m) => m.name == v && m != SleepMode.off,
+        orElse: () => SleepMode.duration);
+  }
+
+  Future<void> setSleepMode(SleepMode mode) async {
+    if (mode == SleepMode.off) return;
+    await _prefs.setString('sleep_mode', mode.name);
+  }
+
+  /// How long the voice takes to fade out before the timer stops it. Zero cuts
+  /// it dead, which some people prefer and everyone else finds alarming.
+  int get sleepFadeSeconds => _prefs.getInt('sleep_fade_seconds') ?? 30;
+  Future<void> setSleepFadeSeconds(int seconds) =>
+      _prefs.setInt('sleep_fade_seconds', seconds.clamp(0, 120));
+
+  /// Sentences to step back when picking a book up after a sleep stop. Nobody
+  /// remembers the last thing they heard before dropping off.
+  int get sleepRewindSentences => _prefs.getInt('sleep_rewind_sentences') ?? 2;
+  Future<void> setSleepRewindSentences(int count) =>
+      _prefs.setInt('sleep_rewind_sentences', count.clamp(0, 10));
+
+  /// Stop our own background music too. On by default: silencing the voice and
+  /// leaving the playlist running all night is not a sleep timer.
+  bool get sleepStopsMusic => _prefs.getBool('sleep_stops_music') ?? true;
+  Future<void> setSleepStopsMusic(bool value) =>
+      _prefs.setBool('sleep_stops_music', value);
+
+  /// Pause whatever else is playing over MPRIS. Off by default — we did not
+  /// start Spotify, so we do not presume to stop it.
+  bool get sleepPausesMpris => _prefs.getBool('sleep_pauses_mpris') ?? false;
+  Future<void> setSleepPausesMpris(bool value) =>
+      _prefs.setBool('sleep_pauses_mpris', value);
+
+  /// Freeze the timer while Car Mode is on. On by default: audio cutting out
+  /// mid-drive for no visible reason makes the driver look at the phone to find
+  /// out why, which is the one thing Car Mode exists to prevent.
+  bool get sleepHoldInCar => _prefs.getBool('sleep_hold_in_car') ?? true;
+  Future<void> setSleepHoldInCar(bool value) =>
+      _prefs.setBool('sleep_hold_in_car', value);
+
+  /// Where a sleep timer stopped, as `"page:sentence"` — `ReadingAnchor`'s
+  /// encoding, kept as a plain string so services need not know about the UI.
+  ///
+  /// Deliberately not a [Bookmark]: [addBookmark] replaces same-page entries,
+  /// so recording this as one would silently eat a bookmark the user placed on
+  /// purpose. The *running* timer is never persisted — waking to a twelve-hour
+  /// expired countdown is nonsense — but where it left off is worth keeping,
+  /// for the resume offered when the book is next opened.
+  String? sleepStop(String bookId) => _prefs.getString('sleep_stop:$bookId');
+
+  Future<void> setSleepStop(String bookId, int page, int sentence) =>
+      _prefs.setString('sleep_stop:$bookId', '$page:$sentence');
+
+  Future<void> clearSleepStop(String bookId) =>
+      _prefs.remove('sleep_stop:$bookId');
 
   // ── voice ──
   /// Chosen Piper voice, remembered across sessions.
