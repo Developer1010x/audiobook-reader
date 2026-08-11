@@ -50,6 +50,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   /// When on, tapping the page starts reading from that sentence.
   bool _readFromTap = true;
 
+  /// When on, the view follows the spoken sentence down the page.
+  bool _autoScroll = true;
+
   List<PdfOutlineNode> _outline = const [];
 
   /// The current page's text split into sentences, used for both the
@@ -73,7 +76,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _tts.onPageFinished = _continueToNextPage;
     _tts.onSegment = (index) {
       if (!mounted) return;
-      setState(() => _activeSegment = index == null ? null : _segmentOffset + index);
+      final active = index == null ? null : _segmentOffset + index;
+      setState(() => _activeSegment = active);
+      if (active != null && _autoScroll) _scrollToSegment(active);
     };
     _tts.voice = widget.settings.voice;
     _resolveType();
@@ -309,6 +314,35 @@ class _ReaderScreenState extends State<ReaderScreen> {
     } catch (e) {
       if (mounted) setState(() => _busy = null);
       _snack('$e');
+    }
+  }
+
+  /// Scroll the spoken sentence into view.
+  ///
+  /// Sentence rectangles are in PDF page space, so they are converted to
+  /// document space before scrolling. Only the vertical position matters —
+  /// yanking horizontally while zoomed in would be disorienting.
+  void _scrollToSegment(int index) {
+    final speech = _speech;
+    if (speech == null || _speechPage == null) return;
+    if (index < 0 || index >= speech.segments.length) return;
+
+    final rects = speech.rectsFor(speech.segments[index]);
+    if (rects.isEmpty) return;
+
+    try {
+      final pageIndex = _speechPage! - 1;
+      final layout = _controller.layout.pageLayouts[pageIndex];
+      final page = _controller.pages[pageIndex];
+      final target = rects.first
+          .toRectInDocument(page: page, pageRect: layout)
+          .inflate(28);
+      _controller.ensureVisible(
+        target,
+        duration: const Duration(milliseconds: 420),
+      );
+    } catch (_) {
+      // Layout not ready yet — the next segment will scroll instead.
     }
   }
 
@@ -610,6 +644,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 _pickVoice();
               case 'tap':
                 setState(() => _readFromTap = !_readFromTap);
+              case 'autoscroll':
+                setState(() => _autoScroll = !_autoScroll);
               case 'ocr':
                 _runOcr();
               case 'night':
@@ -639,6 +675,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
               value: 'tap',
               checked: _readFromTap,
               child: const Text('Tap to read from here'),
+            ),
+            CheckedPopupMenuItem(
+              value: 'autoscroll',
+              checked: _autoScroll,
+              child: const Text('Follow the voice'),
             ),
             const PopupMenuItem(
               value: 'ocr',

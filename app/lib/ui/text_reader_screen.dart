@@ -49,6 +49,13 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
 
   List<_Sentence> _sentences = const [];
 
+  /// One key per sentence, so the spoken one can be scrolled into view.
+  final Map<int, GlobalKey> _anchors = {};
+
+  /// Auto-scroll can be turned off — it fights the user if they are reading
+  /// ahead of the voice.
+  bool _autoScroll = true;
+
   @override
   void initState() {
     super.initState();
@@ -56,8 +63,9 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
     _tts.voice = widget.settings.voice;
     _tts.onSegment = (index) {
       if (!mounted) return;
-      setState(() =>
-          _activeSentence = index == null ? null : _sentenceOffset + index);
+      final active = index == null ? null : _sentenceOffset + index;
+      setState(() => _activeSentence = active);
+      if (active != null && _autoScroll) _scrollTo(active);
     };
     _tts.onPageFinished = _autoAdvance;
     _load();
@@ -131,10 +139,30 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
     for (final old in _sentences) {
       old.recognizer.dispose();
     }
+    _anchors
+      ..clear()
+      ..addEntries([
+        for (var i = 0; i < sentences.length; i++) MapEntry(i, GlobalKey()),
+      ]);
     setState(() {
       _sentences = sentences;
       _activeSentence = null;
     });
+  }
+
+  /// Bring the spoken sentence into view, keeping it about a third down the
+  /// viewport rather than jammed against the top edge — that is where the eye
+  /// naturally sits when following along.
+  void _scrollTo(int index) {
+    final key = _anchors[index];
+    final ctx = key?.currentContext;
+    if (ctx == null) return;
+    Scrollable.ensureVisible(
+      ctx,
+      alignment: 0.35,
+      duration: const Duration(milliseconds: 420),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   TextPage? get _currentPage {
@@ -271,6 +299,16 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
             icon: const Icon(Icons.bookmarks_outlined),
             tooltip: 'All bookmarks',
             onPressed: _openBookmarks,
+          ),
+          IconButton(
+            icon: Icon(_autoScroll
+                ? Icons.vertical_align_center
+                : Icons.swipe_vertical_outlined),
+            tooltip: _autoScroll
+                ? 'Auto-scroll follows the voice'
+                : 'Auto-scroll off',
+            isSelected: _autoScroll,
+            onPressed: () => setState(() => _autoScroll = !_autoScroll),
           ),
           IconButton(
             icon: Icon(_night ? Icons.light_mode : Icons.dark_mode),
