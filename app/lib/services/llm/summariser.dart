@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
+import '../concurrency.dart';
 import 'ai_mode.dart';
 import 'llm_error.dart';
 import 'llm_provider.dart';
@@ -168,11 +169,13 @@ class Summariser {
     );
 
     var done = 0;
-    final notes = await _mapBounded<String, String>(
-      items: chunks,
-      concurrency: provider.maxConcurrency,
-      cancel: cancel,
-      worker: (part, index) async {
+    // Chunks are independent by construction, so a hosted provider can process
+    // several at once — on an eight-part chapter that is roughly four times
+    // less waiting. Order is preserved by mapBounded, which matters: notes
+    // assembled by completion order would scramble the chapter.
+    final notes = await Concurrency.mapBounded<String, LlmResult>(
+      chunks,
+      (part, index) async {
         final result = await _withRetry(
           provider: provider,
           onProgress: onProgress,
@@ -318,39 +321,6 @@ class Summariser {
       }
     }
     throw last ?? const ProviderUnavailable('Failed after retries.');
-  }
-
-  /// Run [worker] over [items] with at most [concurrency] in flight, preserving
-  /// input order in the result.
-  ///
-  /// Chunks are independent by construction, so a hosted provider can process
-  /// several at once — on an eight-part chapter that is roughly four times less
-  /// waiting. Local inference stays serial because one model cannot really run
-  /// in parallel anyway.
-  static Future<List<LlmResult>> _mapBounded<T, R>({
-    required List<String> items,
-    required int concurrency,
-    required Future<LlmResult> Function(String item, int index) worker,
-    CancellationToken? cancel,
-  }) async {
-    final results = List<LlmResult?>.filled(items.length, null);
-    var next = 0;
-
-    Future<void> drain() async {
-      while (true) {
-        if (cancel?.isCancelled ?? false) throw const Cancelled();
-        final index = next++;
-        if (index >= items.length) return;
-        results[index] = await worker(items[index], index);
-      }
-    }
-
-    final workers = List.generate(
-      min(concurrency, items.length),
-      (_) => drain(),
-    );
-    await Future.wait(workers);
-    return results.cast<LlmResult>();
   }
 
   // ── prompts ──

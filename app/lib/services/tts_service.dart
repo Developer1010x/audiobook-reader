@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:path/path.dart' as p;
 
+import 'concurrency.dart';
 import 'piper_tts.dart';
 import 'runtime_env.dart';
 
@@ -35,6 +38,25 @@ class TtsService extends ChangeNotifier {
 
   /// Bumped on every speak/stop, so a superseded chunk pipeline exits quietly.
   int _session = 0;
+
+  /// How many chunks are rendered *ahead* of the one currently playing.
+  ///
+  /// Rendering a single chunk ahead is enough only while synthesis is faster
+  /// than playback; a long sentence, a larger voice model or a busy machine
+  /// tips that over and the gap between chunks is audible. Two absorbs the
+  /// wobble. Much more would burn CPU and disk on audio nobody hears when the
+  /// user stops after the first sentence.
+  static const defaultLookAhead = 2;
+
+  int _lookAhead = defaultLookAhead;
+
+  int get lookAhead => _lookAhead;
+  set lookAhead(int value) => _lookAhead = value.clamp(1, 4);
+
+  /// Piper spends a whole core per process, so synthesis is capped far below
+  /// the CPU pool: the point of rendering ahead is unbroken audio, not a busy
+  /// machine behind a page that has stopped scrolling smoothly.
+  late final _SynthGate _synthGate = _SynthGate(min(2, Concurrency.cpuPool));
 
   bool get isSpeaking => _speaking;
   bool get isPaused => _paused;
@@ -184,9 +206,13 @@ class TtsService extends ChangeNotifier {
   ///
   /// Synthesising a whole page takes ~10 seconds, which would mean staring at a
   /// spinner before any sound. Instead the text is split into sentence-sized
-  /// chunks: the first is synthesised and played immediately, and each later
-  /// chunk is synthesised *while the previous one plays*, so audio starts in
-  /// about a second and never gaps.
+  /// chunks and a small window of them is kept rendering ahead of the chunk
+  /// being played ([lookAhead] deep, at most [_SynthGate.limit] processes at a
+  /// time), so audio starts in about a second and a slow chunk has a head start
+  /// rather than a gap.
+  ///
+  /// Playback itself stays strictly sequential: the window only decides *when*
+  /// a chunk is rendered, never the order it is heard in.
   Future<void> _speakPiper(List<String> chunks) async {
     final session = ++_session;
     _preparing = true;
@@ -201,37 +227,57 @@ class TtsService extends ChangeNotifier {
     }
 
     Future<File?> synth(int index) async {
-      if (index >= chunks.length) return null;
-      final out = p.join(
-        Directory.systemTemp.path,
-        'audiobook_reader_tts_${session}_$index.wav',
-      );
+      if (session != _session) return null;
+      await _synthGate.acquire();
       try {
+        // Checked again after queueing: a chunk that was superseded while it
+        // waited for a slot must not cost a core, nor leave a file behind.
+        if (session != _session) return null;
+        // The pid keeps two running copies of the app off each other's audio —
+        // the session counter alone restarts at zero in every process.
         return await PiperTts.synthesise(
           chunks[index],
           voice: voice,
           rate: _rate,
-          outPath: out,
+          outPath: p.join(
+            Directory.systemTemp.path,
+            'audiobook_reader_tts_${pid}_${session}_$index.wav',
+          ),
         );
       } catch (_) {
         return null; // a failed chunk is skipped rather than killing playback
+      } finally {
+        _synthGate.release();
       }
     }
 
+    // Chunks rendering ahead of the playhead, keyed by index so playback can
+    // claim exactly the one it needs next.
+    final rendering = <int, Future<File?>>{};
+    void schedule(int index) {
+      if (index >= chunks.length) return;
+      rendering.putIfAbsent(index, () => synth(index));
+    }
+
     try {
-      var pending = synth(0);
+      for (var i = 0; i <= _lookAhead; i++) {
+        schedule(i);
+      }
+
+      var started = false;
       for (var i = 0; i < chunks.length; i++) {
-        final audio = await pending;
+        final audio = await (rendering.remove(i) ?? synth(i));
         // Stopped, or a newer speak() superseded this one.
         if (session != _session) {
           if (audio != null) _cleanup(audio);
           return;
         }
-        // Start the next chunk rendering while this one plays.
-        pending = synth(i + 1);
+        // Top the window back up, so rendering continues under this playback.
+        schedule(i + _lookAhead + 1);
 
         if (audio == null) continue;
-        if (i == 0) {
+        if (!started) {
+          started = true;
           _preparing = false;
           notifyListeners();
         }
@@ -240,6 +286,10 @@ class TtsService extends ChangeNotifier {
         if (session != _session) return;
       }
     } finally {
+      // Everything left in the window sits ahead of the playhead and will never
+      // be heard. Its files are already on disk, or about to be, so they have to
+      // be chased down on every exit — stop, supersede or throw alike.
+      _discardRendered(rendering.values.toList());
       if (session == _session) {
         _linuxProcess = null;
         _speaking = false;
@@ -249,6 +299,22 @@ class TtsService extends ChangeNotifier {
         notifyListeners();
         onPageFinished?.call();
       }
+    }
+  }
+
+  /// Delete look-ahead audio that was abandoned before it could be played.
+  ///
+  /// Deliberately not awaited: a Piper process already running cannot be
+  /// hurried, and stop() has to feel instant. Each delete happens as its render
+  /// settles, long after the caller has moved on.
+  void _discardRendered(Iterable<Future<File?>> rendering) {
+    for (final render in rendering) {
+      unawaited(render.then(
+        (audio) {
+          if (audio != null) _cleanup(audio);
+        },
+        onError: (_) {},
+      ));
     }
   }
 
@@ -344,5 +410,38 @@ class TtsService extends ChangeNotifier {
     _linuxProcess?.kill();
     if (!_usesLinuxBackend) _tts.stop();
     super.dispose();
+  }
+}
+
+/// A counting semaphore over Piper processes.
+///
+/// The look-ahead window would otherwise launch every queued chunk at once, and
+/// three synthesisers running against a two-core machine make the page stutter
+/// under the very audio they were meant to smooth out.
+class _SynthGate {
+  _SynthGate(this.limit);
+
+  final int limit;
+  int _active = 0;
+  final _waiting = Queue<Completer<void>>();
+
+  Future<void> acquire() {
+    if (_active < limit) {
+      _active++;
+      return Future<void>.value();
+    }
+    final slot = Completer<void>();
+    _waiting.add(slot);
+    return slot.future;
+  }
+
+  /// A freed slot is handed straight to the longest waiter, keeping the queue
+  /// first-come — the playhead's own chunk is always the first one queued.
+  void release() {
+    if (_waiting.isNotEmpty) {
+      _waiting.removeFirst().complete();
+      return;
+    }
+    _active--;
   }
 }

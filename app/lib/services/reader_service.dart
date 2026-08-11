@@ -2,8 +2,23 @@ import 'package:pdfrx/pdfrx.dart';
 
 import '../models/book.dart';
 import 'classifier.dart';
+import 'concurrency.dart';
 import 'ocr_service.dart';
 import 'spoken_text.dart';
+
+/// Isolate entry point for classification scoring.
+///
+/// [Classification] itself carries a [BookType] enum, and enum identity across
+/// an isolate hand-off is a guarantee not worth leaning on, so the result
+/// crosses as primitives and is rebuilt by the caller.
+Map<String, Object?> _scoreSample(String sample) {
+  final result = BookClassifier.classify(sample);
+  return {
+    'type': result.type.name,
+    'confidence': result.confidence,
+    'signals': result.signals,
+  };
+}
 
 /// Text extraction from a PDF. The page *rendering* is handled by PdfViewer in
 /// the UI (which is what makes diagrams visible); this service exists for the
@@ -74,42 +89,73 @@ class ReaderService {
   }) async {
     final doc = await PdfDocument.openFile(book.path);
     final int first, last;
-    final buffer = StringBuffer();
+    // One slot per page, so text that arrives late — OCR finishing in whatever
+    // order the pages happen to complete — still lands in page order.
+    final List<String?> parts;
     final scanned = <int>[];
     try {
       last = end.clamp(1, doc.pages.length);
       first = start.clamp(1, last);
+      parts = List<String?>.filled(last - first + 1, null);
+      // These reads share one document handle, so they stay sequential:
+      // concurrent page access on a single pdfrx document is not a guarantee
+      // the library makes. Extraction is cheap anyway — OCR below is the part
+      // worth parallelising.
       for (var i = first; i <= last; i++) {
         final text = await doc.pages[i - 1].loadStructuredText();
         if (text.fullText.trim().isEmpty) {
           scanned.add(i); // handled below, after the document is closed
         } else {
-          buffer.writeln(text.fullText);
-          buffer.writeln();
+          parts[i - first] = text.fullText;
         }
       }
     } finally {
       doc.dispose();
     }
 
-    // OCR reopens the document per page, so it must not run while this handle
-    // is still held.
-    for (final page in scanned) {
-      final cached = await OcrService.cached(book, page);
-      if (cached != null && cached.trim().isNotEmpty) {
-        buffer.writeln(cached);
-        buffer.writeln();
-      } else if (ocrFallback) {
-        onProgress?.call('Reading scanned page $page of $last…');
-        try {
-          buffer.writeln(
-            await OcrService.recognisePage(book, page, onProgress: onProgress),
-          );
-          buffer.writeln();
-        } on OcrException {
-          continue; // one bad page should not sink the whole range
-        }
+    if (scanned.isNotEmpty) {
+      // OCR reopens the document per page, so it must not run while the handle
+      // above is still held. Each page costs seconds of render plus a Tesseract
+      // subprocess, so pages go through the CPU pool rather than one at a time.
+      // Nothing slow happens unless OCR may actually run, so stay quiet
+      // otherwise; a cache lookup is not worth a stage message.
+      final report = ocrFallback ? onProgress : null;
+      var done = 0;
+      report?.call('Reading ${scanned.length} scanned page(s)…');
+      // Per-page detail only makes sense when nothing overlaps; with several
+      // pages in flight the stage line would flicker between them.
+      final detail = scanned.length == 1 ? onProgress : null;
+
+      // mapBounded, not mapBoundedLenient: results are matched back to pages by
+      // index, so a dropped entry would shift every page after it.
+      final recognised = await Concurrency.mapBounded<int, String?>(
+        scanned,
+        (page, _) async {
+          try {
+            final cached = await OcrService.cached(book, page);
+            if (cached != null && cached.trim().isNotEmpty) return cached;
+            if (!ocrFallback) return null;
+            return await OcrService.recognisePage(book, page, onProgress: detail);
+          } on OcrException {
+            return null; // one bad page should not sink the whole range
+          } finally {
+            done++;
+            report?.call('Read $done of ${scanned.length} scanned page(s)…');
+          }
+        },
+        concurrency: Concurrency.cpuPool,
+      );
+
+      for (var i = 0; i < scanned.length; i++) {
+        parts[scanned[i] - first] = recognised[i];
       }
+    }
+
+    final buffer = StringBuffer();
+    for (final part in parts) {
+      if (part == null) continue;
+      buffer.writeln(part);
+      buffer.writeln();
     }
     return buffer.toString();
   }
@@ -131,6 +177,7 @@ class ReaderService {
   /// fast enough to run on first open.
   static Future<Classification> classify(Book book) async {
     final doc = await PdfDocument.openFile(book.path);
+    final String sample;
     try {
       final n = doc.pages.length;
       if (n == 0) {
@@ -144,6 +191,9 @@ class ReaderService {
         if (!samples.contains(page)) samples.add(page);
       }
 
+      // Sequential on purpose: one document handle is shared here, and pdfrx
+      // makes no promise about concurrent page access on it. Five reads are
+      // cheap; the scoring below is the part that can cost a frame.
       final buffer = StringBuffer();
       for (final page in samples) {
         try {
@@ -153,9 +203,25 @@ class ReaderService {
           continue; // a single unreadable page shouldn't fail classification
         }
       }
-      return BookClassifier.classify(buffer.toString());
+      sample = buffer.toString();
     } finally {
       doc.dispose();
     }
+
+    // A dozen regexes over several pages of text. On a short sample the isolate
+    // hand-off costs more than the scan, so only a big one goes off-thread.
+    if (!Concurrency.worthOffloading(sample.length)) {
+      return BookClassifier.classify(sample);
+    }
+    final scored = await Concurrency.runOffThread(
+      _scoreSample,
+      sample,
+      debugLabel: 'classify',
+    );
+    return Classification(
+      BookType.values.byName(scored['type'] as String),
+      scored['confidence'] as double,
+      (scored['signals'] as List).cast<String>(),
+    );
   }
 }
