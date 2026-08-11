@@ -233,6 +233,25 @@ class SettingsService {
   Future<void> clearSleepStop(String bookId) =>
       _prefs.remove('sleep_stop:$bookId');
 
+  // ── car mode ──
+  /// Keep the screen on in Car Mode. On by default: a screen that sleeps while
+  /// driving means fumbling to wake it, which is the situation Car Mode exists
+  /// to avoid.
+  bool get carKeepAwake => _prefs.getBool('car_keep_awake') ?? true;
+  Future<void> setCarKeepAwake(bool value) =>
+      _prefs.setBool('car_keep_awake', value);
+
+  /// Show the sentence being read. Off by default — text is exactly what a
+  /// driver should not be reading.
+  bool get carShowText => _prefs.getBool('car_show_text') ?? false;
+  Future<void> setCarShowText(bool value) =>
+      _prefs.setBool('car_show_text', value);
+
+  /// Confirm taps by feel, so a control can be used without looking at it.
+  bool get carHaptics => _prefs.getBool('car_haptics') ?? true;
+  Future<void> setCarHaptics(bool value) =>
+      _prefs.setBool('car_haptics', value);
+
   // ── voice ──
   /// Chosen Piper voice, remembered across sessions.
   String? get voice => _prefs.getString('tts_voice');

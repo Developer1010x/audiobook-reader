@@ -46,6 +46,10 @@ dependencies:
   archive: ^4.0.9
   html: ^0.15.6
   xml: ^7.0.1
+  audio_service: ^0.18.19
+  just_audio: ^0.10.6
+  audio_session: ^0.2.4
+  flutter_markdown_plus: ^1.0.12
 
 dev_dependencies:
   flutter_test:

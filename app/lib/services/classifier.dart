@@ -35,6 +35,49 @@ class BookClassifier {
     'code': RegExp(r'[{};]\s*$|\b(function|class|def|import|return|void|int|var)\b', multiLine: true),
   };
 
+  /// A research paper announces itself structurally long before its content
+  /// differs: abstract, methodology, references, DOIs.
+  static final _paperPatterns = <String, RegExp>{
+    'abstract': RegExp(r'^\s*abstract\b', caseSensitive: false, multiLine: true),
+    'sections': RegExp(
+        r'\b(introduction|related work|methodology|experiments?|evaluation|'
+        r'results and discussion|conclusions?|references|bibliography)\b',
+        caseSensitive: false),
+    'citations': RegExp(r'\[\d+(,\s*\d+)*\]|\(\w+ et al\.?,?\s*\d{4}\)'),
+    'doi': RegExp(r'\bdoi:|arxiv:|10\.\d{4,}/', caseSensitive: false),
+    'academic': RegExp(
+        r'\b(we propose|we present|our approach|state[- ]of[- ]the[- ]art|'
+        r'baseline|ablation|dataset|hypothesis|statistically significant)\b',
+        caseSensitive: false),
+  };
+
+  /// Reference documentation reads as instructions to a machine, not a reader.
+  static final _docsPatterns = <String, RegExp>{
+    'api': RegExp(
+        r'\b(parameters?|returns?|arguments?|throws|deprecated|since version|'
+        r'default value|see also|usage)\b\s*:?', caseSensitive: false),
+    'cli': RegExp(r'^\s*[-]{1,2}[a-z][\w-]*\b|\$\s+\w+', multiLine: true),
+    'config': RegExp(r'^\s*[\w.]+\s*[:=]\s*\S', multiLine: true),
+    'imperative': RegExp(
+        r'\b(install|configure|run the|set the|add the|create a|open the|'
+        r'navigate to|click|select)\b', caseSensitive: false),
+    'versions': RegExp(r'\bv?\d+\.\d+(\.\d+)?\b'),
+  };
+
+  /// Correspondence is short and has a salutation and a sign-off.
+  static final _letterPatterns = <String, RegExp>{
+    'salutation': RegExp(
+        r'^\s*(dear|to whom it may concern|hi|hello|respected)\b',
+        caseSensitive: false, multiLine: true),
+    'signoff': RegExp(
+        r'\b(yours (sincerely|faithfully|truly)|kind regards|best regards|'
+        r'regards|sincerely),?\s*\$',
+        caseSensitive: false, multiLine: true),
+    'letterhead': RegExp(
+        r'^\s*(subject|re|ref|date|from|to)\s*:', caseSensitive: false,
+        multiLine: true),
+  };
+
   /// Markers of narrative prose.
   static final _storyPatterns = <String, RegExp>{
     'dialogue': RegExp(r'[""“”].{3,}?[""“”]|^\s*[-—]\s+\w', multiLine: true),
@@ -66,38 +109,66 @@ class BookClassifier {
     // Per 1000 characters, so a long sample doesn't automatically look technical.
     final per1k = text.length / 1000.0;
     final hits = <String>[];
-    var textbookScore = 0.0;
-    var storyScore = 0.0;
 
-    for (final entry in _textbookPatterns.entries) {
-      final n = entry.value.allMatches(text).length;
-      if (n == 0) continue;
-      final density = n / per1k;
-      // Diminishing returns: variety of signals should beat one repeated hit.
-      textbookScore += density.clamp(0.0, 3.0);
-      hits.add('${entry.key} ×$n');
-    }
-    for (final entry in _storyPatterns.entries) {
-      final n = entry.value.allMatches(text).length;
-      if (n == 0) continue;
-      storyScore += (n / per1k).clamp(0.0, 3.0);
-      hits.add('${entry.key} ×$n');
+    double scoreOf(Map<String, RegExp> patterns, String tag) {
+      var score = 0.0;
+      for (final entry in patterns.entries) {
+        final n = entry.value.allMatches(text).length;
+        if (n == 0) continue;
+        // Diminishing returns: variety of signals should beat one repeated hit.
+        score += (n / per1k).clamp(0.0, 3.0);
+        hits.add('$tag:${entry.key} ×$n');
+      }
+      return score;
     }
 
-    final total = textbookScore + storyScore;
+    final scores = <BookType, double>{
+      BookType.textbook: scoreOf(_textbookPatterns, 'textbook'),
+      BookType.paper: scoreOf(_paperPatterns, 'paper'),
+      BookType.documentation: scoreOf(_docsPatterns, 'docs'),
+      BookType.letter: scoreOf(_letterPatterns, 'letter'),
+      BookType.storybook: scoreOf(_storyPatterns, 'story'),
+    };
+
+    // A letter is defined as much by brevity as by wording; a 400-page book
+    // with a "Dear reader" preface is not correspondence.
+    if (text.length > 6000) scores[BookType.letter] = 0;
+
+    final total = scores.values.fold(0.0, (a, b) => a + b);
     if (total == 0) {
       return Classification(BookType.storybook, 0.0, ['no clear signals', ...hits]);
     }
 
-    final textbookShare = textbookScore / total;
-    // The bias: a textbook must clear a real margin, not merely win 51/49.
-    final isTextbook = textbookShare > 0.62;
-    final confidence = ((textbookShare - 0.5).abs() * 2).clamp(0.0, 1.0);
+    var winner = BookType.storybook;
+    var winningScore = 0.0;
+    scores.forEach((type, score) {
+      if (score > winningScore) {
+        winner = type;
+        winningScore = score;
+      }
+    });
 
-    return Classification(
-      isTextbook ? BookType.textbook : BookType.storybook,
-      confidence,
-      hits,
-    );
+    final share = winningScore / total;
+
+    // The bias, unchanged and still the point: a type that unlocks the AI path
+    // must clear a real margin, not merely win 51/49. Getting this wrong the
+    // expensive way offers a button that spends money and sends text to an API;
+    // getting it wrong the cheap way hides a feature the user can turn back on.
+    if (winner.usesLlm && share < 0.62) {
+      return Classification(
+        BookType.storybook,
+        0.0,
+        ['no type won clearly — defaulted to storybook', ...hits],
+      );
+    }
+
+    // Confidence is how far ahead the winner is of an even split between the
+    // types that actually scored.
+    final scoring = scores.values.where((s) => s > 0).length;
+    final evenShare = scoring == 0 ? 1.0 : 1.0 / scoring;
+    final confidence =
+        ((share - evenShare) / (1 - evenShare)).clamp(0.0, 1.0).toDouble();
+
+    return Classification(winner, confidence, hits);
   }
 }

@@ -11,6 +11,7 @@ import '../services/ocr_service.dart';
 import '../services/reader_service.dart';
 import '../services/settings_service.dart';
 import '../services/tts_service.dart';
+import 'widgets/markdown_text.dart';
 
 /// The only place in the app that contacts an LLM. Reached solely from a
 /// textbook, and only when the user asks for it.
@@ -288,13 +289,17 @@ class _SummarySheetState extends State<SummarySheet> {
                 IconButton(
                   icon: Icon(_tts.isSpeaking ? Icons.stop : Icons.volume_up),
                   tooltip: 'Read this aloud',
-                  onPressed: () =>
-                      _tts.isSpeaking ? _tts.stop() : _tts.speak(_result!),
+                  onPressed: () => _tts.isSpeaking
+                      ? _tts.stop()
+                      : _tts.speak(MarkdownText.toSpeech(_result!)),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            SelectableText(_result!, style: theme.textTheme.bodyMedium),
+            // Models answer in Markdown, and the prompts ask for that structure
+            // because it is what makes a summary scannable. Showing the raw
+            // asterisks threw that away.
+            MarkdownText(_result!),
           ],
         ],
       ),

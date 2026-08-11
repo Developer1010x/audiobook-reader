@@ -46,9 +46,39 @@ void main() {
 
     test('player arguments are tailored per player', () {
       expect(PiperTts.playerArgs('/usr/bin/aplay', 'x.wav'), contains('-q'));
-      expect(PiperTts.playerArgs('/usr/bin/ffplay', 'x.wav'), contains('-autoexit'));
-      // pw-play and paplay take the bare filename.
-      expect(PiperTts.playerArgs('/usr/bin/pw-play', 'x.wav'), ['x.wav']);
+      expect(
+          PiperTts.playerArgs('/usr/bin/ffplay', 'x.wav'), contains('-autoexit'));
+      expect(PiperTts.playerArgs('/usr/bin/pw-play', 'x.wav'), contains('x.wav'));
+    });
+
+    test('volume reaches the players that can honour it', () {
+      // The sleep timer fades out rather than cutting off mid-word, which needs
+      // the level to actually reach the player process.
+      expect(PiperTts.playerArgs('/usr/bin/ffplay', 'x.wav', volume: 0.5),
+          contains('50'));
+      // pw-play and paplay take DIFFERENT scales. Using one tool's range for
+      // the other is silent: the value is clamped, so the fade never happens.
+      expect(PiperTts.playerArgs('/usr/bin/pw-play', 'x.wav', volume: 0.5),
+          contains('--volume=0.500'));
+      expect(PiperTts.playerArgs('/usr/bin/paplay', 'x.wav', volume: 1.0),
+          contains('--volume=65536'));
+      expect(PiperTts.playerArgs('/usr/bin/pw-play', 'x.wav', volume: 1.0),
+          contains('--volume=1.000'));
+    });
+
+    test('aplay cannot take a volume, and says so by omission', () {
+      // Not a bug: aplay has no level control, so a fade there simply has no
+      // effect rather than failing. The session still ends.
+      final args = PiperTts.playerArgs('/usr/bin/aplay', 'x.wav', volume: 0.2);
+      expect(args.any((a) => a.contains('volume')), isFalse);
+      expect(args, contains('x.wav'));
+    });
+
+    test('volume is clamped, so a bad value cannot produce a bad argument', () {
+      expect(PiperTts.playerArgs('/usr/bin/ffplay', 'x.wav', volume: 5.0),
+          contains('100'));
+      expect(PiperTts.playerArgs('/usr/bin/ffplay', 'x.wav', volume: -1.0),
+          contains('0'));
     });
   });
 

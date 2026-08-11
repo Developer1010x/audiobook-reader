@@ -115,10 +115,34 @@ class PiperTts {
     return null;
   }
 
-  static List<String> playerArgs(String player, String file) {
+  /// Arguments for [player], including volume where the player supports it.
+  ///
+  /// [volume] is 0..1. Only ffplay and the PulseAudio/PipeWire tools can be
+  /// told a level; aplay cannot, so a fade there simply has no effect rather
+  /// than failing — the sleep timer still ends the session, just without the
+  /// gentle taper.
+  static List<String> playerArgs(String player, String file,
+      {double volume = 1.0}) {
     final name = p.basename(player);
+    final level = volume.clamp(0.0, 1.0);
     return switch (name) {
-      'ffplay' => ['-nodisp', '-autoexit', '-loglevel', 'quiet', file],
+      'ffplay' => [
+          '-nodisp',
+          '-autoexit',
+          '-loglevel',
+          'quiet',
+          // ffplay takes 0-100.
+          '-volume',
+          '${(level * 100).round()}',
+          file,
+        ],
+      // Different scales, verified against each tool's own --help. Getting
+      // this wrong is silent: an out-of-range value is clamped, so the fade
+      // simply never happens rather than erroring.
+      //   pw-play: 0.0-1.0 (linear float)
+      //   paplay:  0-65536 (PulseAudio integer)
+      'pw-play' => ['--volume=${level.toStringAsFixed(3)}', file],
+      'paplay' => ['--volume=${(level * 65536).round()}', file],
       'aplay' => ['-q', file],
       _ => [file],
     };

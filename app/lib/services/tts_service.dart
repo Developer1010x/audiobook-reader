@@ -39,6 +39,17 @@ class TtsService extends ChangeNotifier {
   /// Bumped on every speak/stop, so a superseded chunk pipeline exits quietly.
   int _session = 0;
 
+  /// Playback volume, 0..1. Used by the sleep timer to fade out rather than
+  /// cutting off mid-word, which wakes people up instead of letting them go.
+  double _volume = 1.0;
+
+  /// Set when the sleep timer asks to stop at the next sentence boundary.
+  bool _stopAtBoundary = false;
+
+  /// Fired when a boundary stop actually takes effect, so the caller can record
+  /// where the voice ended rather than guessing.
+  void Function()? onBoundaryStop;
+
   /// How many chunks are rendered *ahead* of the one currently playing.
   ///
   /// Rendering a single chunk ahead is enough only while synthesis is faster
@@ -84,6 +95,40 @@ class TtsService extends ChangeNotifier {
     notifyListeners();
   }
   double get rate => _rate;
+
+  double get volume => _volume;
+
+  /// Whether this engine can stop at a sentence boundary.
+  ///
+  /// Piper plays one sentence per process, so it can. speech-dispatcher is
+  /// handed a whole page in one call and has no boundary to end on, and
+  /// flutter_tts gives no reliable per-sentence completion either — for those,
+  /// an honest hard stop beats pretending.
+  bool get canStopCleanly => usingPiper;
+
+  /// Finish the sentence being spoken, then stop.
+  ///
+  /// The gentle ending for a sleep timer: cutting off mid-clause is what makes
+  /// someone open their eyes.
+  void stopAfterCurrentSegment() {
+    if (!canStopCleanly) {
+      unawaited(stop());
+      return;
+    }
+    _stopAtBoundary = true;
+  }
+
+  /// Set playback volume for subsequent audio.
+  ///
+  /// Applied to the player rather than to synthesis, so a fade costs nothing
+  /// and does not invalidate chunks already rendered ahead.
+  Future<void> setVolume(double value) async {
+    _volume = value.clamp(0.0, 1.0);
+    if (!_usesLinuxBackend) {
+      await _tts.setVolume(_volume);
+    }
+    notifyListeners();
+  }
 
   static bool get _usesLinuxBackend => Platform.isLinux;
 
@@ -324,7 +369,7 @@ class TtsService extends ChangeNotifier {
       final player = PiperTts.player!;
       final process = await Process.start(
         player,
-        PiperTts.playerArgs(player, audio.path),
+        PiperTts.playerArgs(player, audio.path, volume: _volume),
       );
       _linuxProcess = process;
       await process.exitCode;

@@ -5,18 +5,21 @@ import 'package:pdfrx/pdfrx.dart';
 import '../models/book.dart';
 import '../models/annotation.dart';
 import '../models/bookmark.dart';
+import '../services/chapter_index.dart';
 import '../services/classifier.dart';
 import '../services/ocr_service.dart';
 import '../services/reader_service.dart';
 import '../services/piper_tts.dart';
 import '../services/spoken_text.dart';
 import '../services/settings_service.dart';
+import '../services/sleep_timer.dart';
 import '../services/stats_service.dart';
 import '../services/media_player_service.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
 import 'music_sheet.dart';
 import 'notes_sheet.dart';
+import 'reader_playback.dart';
 import 'summary_sheet.dart';
 
 class ReaderScreen extends StatefulWidget {
@@ -34,7 +37,8 @@ class ReaderScreen extends StatefulWidget {
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends State<ReaderScreen> {
+class _ReaderScreenState extends State<ReaderScreen>
+    with ReaderPlayback<ReaderScreen> {
   final _controller = PdfViewerController();
   final _searchField = TextEditingController();
   final _searchFocus = FocusNode();
@@ -66,9 +70,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
   int? _speechPage;
   int? _activeSegment;
 
+  /// The page whose sentences the reader currently wants. A load that finishes
+  /// after this has moved on is dropped rather than installed.
+  int? _speechWanted;
+
   /// Index of the segment speech started from, so segment 0 of the TTS run maps
   /// back to the right sentence on the page.
   int _segmentOffset = 0;
+
+  /// First pages of the book's sections, for the "end of chapter" sleep ending.
+  ChapterIndex _chapters = ChapterIndex.empty;
 
   /// Where to reopen the book. Read once in initState, because the viewer needs
   /// it as an initial value rather than a live one.
@@ -82,10 +93,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _tts.onSegment = (index) {
       if (!mounted) return;
       final active = index == null ? null : _segmentOffset + index;
+      // Before the setState, and only when non-null: stop() clears the
+      // highlight by reporting null, and that must not clear the resume point.
+      if (active != null) noteSpoken(active);
       setState(() => _activeSegment = active);
       if (active != null && _autoScroll) _scrollToSegment(active);
     };
     _tts.voice = widget.settings.voice;
+    initPlayback();
     _resolveType();
     _checkTts();
   }
@@ -95,7 +110,128 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (mounted) setState(() => _ttsAvailable = available);
   }
 
-  void _onTts() => setState(() {});
+  void _onTts() {
+    // Every start, stop and pause passes through here, so this is the one place
+    // the sleep countdown needs holding and releasing.
+    syncSleepHold();
+    setState(() {});
+  }
+
+  // ── the ReaderPlayback seam ──
+  //
+  // Car Mode and the sleep timer reach the book only through these. Car Mode
+  // never constructs a TtsService: two instances in one process render Piper
+  // chunks to byte-identical temp paths and eat each other's audio.
+
+  @override
+  TtsService get tts => _tts;
+
+  @override
+  SettingsService get settings => widget.settings;
+
+  @override
+  Book get book => widget.book;
+
+  @override
+  MediaPlayerService get music => _music;
+
+  @override
+  ChapterIndex get chapters => _chapters;
+
+  @override
+  String get bookTitle => widget.book.title;
+
+  @override
+  int get page => _page;
+
+  @override
+  int get pageCount => _pageCount;
+
+  @override
+  int get sentenceCount =>
+      _speechPage == _page ? (_speech?.segments.length ?? 0) : 0;
+
+  @override
+  String? get currentSentence {
+    final speech = _speech;
+    final index = _activeSegment;
+    // Null rather than a guess while the list is being rebuilt: the display is
+    // opt-in and a stale sentence is worse than none.
+    if (speech == null || index == null || _speechPage != _page) return null;
+    if (index < 0 || index >= speech.segments.length) return null;
+    return speech.segments[index].text;
+  }
+
+  @override
+  bool get isBookmarkedHere =>
+      widget.settings.isBookmarked(widget.book.id, _page);
+
+  @override
+  String? get busyMessage => _busy;
+
+  @override
+  Future<void> togglePlay() => _speakCurrentPage();
+
+  @override
+  Future<bool> bookmarkHere() async {
+    final id = widget.book.id;
+    final target = _controller.pageNumber ?? _page;
+    // Adds only, never removes: a mis-aimed second press in a car must not
+    // throw away the bookmark the first one made.
+    if (widget.settings.isBookmarked(id, target)) return false;
+    var preview = '';
+    try {
+      preview = (await ReaderService.pageText(widget.book, target))
+          .replaceAll('\n', ' ')
+          .trim();
+    } catch (_) {}
+    await widget.settings.addBookmark(
+      id,
+      Bookmark(
+        page: target,
+        preview: preview,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (mounted) setState(() {});
+    return true;
+  }
+
+  @override
+  Future<void> speakAt(int pageNumber, int sentence,
+      {required bool resume}) async {
+    final target = _pageCount > 0 ? pageNumber.clamp(1, _pageCount) : pageNumber;
+    // Only once the viewer is laid out — goToPage throws before that.
+    if (_pageCount > 0 && target != (_controller.pageNumber ?? _page)) {
+      _controller.goToPage(pageNumber: target);
+    }
+    final speech = await _loadSpeech(target);
+    if (!mounted || speech == null || speech.isEmpty) return;
+    // A negative index counts back from the end of the page.
+    final index = (sentence < 0 ? speech.segments.length + sentence : sentence)
+        .clamp(0, speech.segments.length - 1);
+    if (!resume) {
+      // Skipping while paused moves the cursor and stays paused.
+      _segmentOffset = index;
+      noteSpeechStart(target, index);
+      setState(() => _activeSegment = index);
+      return;
+    }
+    await _speakFrom(speech, index, target);
+  }
+
+  @override
+  void onCarModeChanged(bool active) {
+    if (!active) return;
+    // Search and the contents panel have no place behind a driving overlay, and
+    // a live searcher keeps repainting matches nobody can see.
+    if (_searching) {
+      _searcher?.resetTextSearch();
+      _searchField.clear();
+      _searching = false;
+    }
+    _showOutline = false;
+  }
 
   Future<void> _resolveType() async {
     final override = widget.settings.typeOverride(widget.book.id);
@@ -127,6 +263,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (pageNumber == null) return;
     setState(() {
       _page = pageNumber;
+      // Also supersedes any sentence load still in flight for the page just
+      // left, so it cannot install itself over this one.
+      _speechWanted = pageNumber;
       if (_speechPage != pageNumber) {
         _speech = null;
         _activeSegment = null;
@@ -176,10 +315,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   /// Load and cache the current page's sentence map.
   Future<PageSpeech?> _loadSpeech(int page) async {
+    // Recorded before the cache hit, not after: returning a cached page while
+    // a load for a *different* one is still in flight would otherwise leave
+    // that load's page as the one wanted, and it would install itself over the
+    // page now being read — killing the highlight for the rest of it.
+    _speechWanted = page;
     if (_speech != null && _speechPage == page) return _speech;
     try {
       final speech = await ReaderService.pageSpeech(widget.book, page);
-      if (!mounted) return null;
+      // Superseded while it loaded. Installing it now would leave _speech — and
+      // with it the highlight and the auto-scroll — describing a page the reader
+      // has already left, which auto-scroll would then yank back to.
+      if (!mounted || _speechWanted != page) return null;
       setState(() {
         _speech = speech;
         _speechPage = page;
@@ -214,8 +361,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _snack(TtsService.unavailableMessage);
       return;
     }
+    // Every path into speech funnels through here, so this is the one place the
+    // expiry latch is cleared. Scattering that across the entry points would
+    // leave the next one added needing to remember.
+    sleep.clearExpiry();
     await _tts.stop();
     _segmentOffset = from;
+    noteSpeechStart(page, from);
     setState(() => _activeSegment = from);
     final segments =
         speech.segments.sublist(from).map((s) => s.text).toList();
@@ -231,6 +383,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _snack(TtsService.unavailableMessage);
       return;
     }
+    // The OCR fallback below is the one play path that never reaches
+    // _speakFrom, so the expiry latch has to be cleared here as well.
+    sleep.clearExpiry();
     try {
       // The controller is the source of truth: _page stays 1 until onPageChanged
       // fires, so pressing Play right after opening would otherwise read page 1.
@@ -240,7 +395,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
       // Prefer the sentence-mapped path so the highlight follows along.
       final speech = await _loadSpeech(page);
       if (speech != null && !speech.isEmpty) {
-        await _speakFrom(speech, 0, page);
+        // From the cursor, not the top: pause is stop on Linux, so restarting
+        // at sentence 0 would re-read the whole page after every pause.
+        await _speakFrom(
+          speech,
+          resumeSentence.clamp(0, speech.segments.length - 1),
+          page,
+        );
         return;
       }
 
@@ -267,6 +428,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _snack('OCR found no text on this page.');
         return;
       }
+      _segmentOffset = 0;
+      noteSpeechStart(page, 0);
       await _tts.speak(text);
     } catch (e) {
       if (mounted) setState(() => _busy = null);
@@ -328,6 +491,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   /// document space before scrolling. Only the vertical position matters —
   /// yanking horizontally while zoomed in would be disorienting.
   void _scrollToSegment(int index) {
+    // Car Mode covers the viewer, so this would be a 420 ms animation per
+    // sentence with nothing on screen to show for it.
+    if (inCarMode) return;
     final speech = _speech;
     if (speech == null || _speechPage == null) return;
     if (index < 0 || index >= speech.segments.length) return;
@@ -344,7 +510,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
           .inflate(28);
       _controller.ensureVisible(
         target,
-        duration: const Duration(milliseconds: 420),
+        // One 420 ms slide per sentence is the most repetitive motion in the
+        // app; a reader who has asked the system to stop animating gets the
+        // same position without the travel.
+        duration: MediaQuery.disableAnimationsOf(context)
+            ? Duration.zero
+            : const Duration(milliseconds: 420),
       );
     } catch (_) {
       // Layout not ready yet — the next segment will scroll instead.
@@ -529,10 +700,44 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _continueToNextPage() async {
-    if (!mounted || _page >= _pageCount) return;
-    _controller.goToPage(pageNumber: _page + 1);
-    final text = await ReaderService.pageText(widget.book, _page + 1);
-    if (mounted && text.trim().isNotEmpty) await _tts.speak(text);
+    // The latch covers the window between this firing and speech restarting:
+    // a timer expiring in there would stop an engine that is already idle, and
+    // the queued advance would speak anyway — all night.
+    if (!mounted || sleep.hasExpired) return;
+    // TtsService reports "stopped" one line before it reports "page finished",
+    // so _onTts has already run syncSleepHold and held the timer by the time we
+    // get here — and SleepTimer.pageFinished is ignored while held. Lift that
+    // for the endings with no clock to freeze, or they never fire at all and
+    // the book reads on all night. Car Mode's hold is deliberate and stays: it
+    // exists so a section ending cannot silence the audio mid-drive.
+    if (sleep.mode != SleepMode.duration &&
+        !(inCarMode && widget.settings.sleepHoldInCar)) {
+      sleep.resume();
+    }
+    // The page has been read out, so the end-of-page and end-of-chapter endings
+    // land here. The latch they set is the same one the duration ending sets.
+    if (sleepEndsHere()) return;
+    // Captured before any await: goToPage can fire onPageChanged in between,
+    // and reading _page + 1 a second time would then fetch the page after next.
+    final next = _page + 1;
+    if (next > _pageCount) return;
+    _controller.goToPage(pageNumber: next);
+
+    // Prefer the sentence-mapped path. Falling through to speak() would hand
+    // Piper 350-character chunks while _segmentOffset still holds a sentence
+    // offset, so onSegment would report indices into a different list.
+    final speech = await _loadSpeech(next);
+    if (!mounted || sleep.hasExpired) return;
+    if (speech != null && !speech.isEmpty) return _speakFrom(speech, 0, next);
+
+    final text = await ReaderService.pageText(widget.book, next);
+    if (!mounted || sleep.hasExpired) return;
+    if (text.trim().isEmpty) return;
+    // No sentence map for this page, so onSegment will report chunk indices;
+    // zero the offset rather than add them to a stale sentence position.
+    _segmentOffset = 0;
+    noteSpeechStart(next, 0);
+    await _tts.speak(text);
   }
 
   // ── chrome ──
@@ -595,6 +800,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    // Before the engine goes: the sleep timer and the keep-awake inhibitor do
+    // not ride on the TTS session, so nothing else would ever cancel them.
+    disposePlayback();
     _tts.removeListener(_onTts);
     _tts.dispose();
     _music.dispose();
@@ -610,48 +818,84 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final isTextbook = _type == BookType.textbook;
 
     return Scaffold(
-      appBar: _searching ? _searchBar(theme) : _titleBar(theme, isTextbook),
-      body: Column(
+      // Car Mode is the whole screen or it is not a driving surface. It brings
+      // its own PopScope and Escape binding, so back exits the overlay rather
+      // than dumping a driver back into the library.
+      appBar: _carModeBar(theme, isTextbook),
+      body: Stack(
+        // The body slot grows by both bars on the way into Car Mode, so the
+        // viewer below relayouts once each way. That is the price of the
+        // overlay being the whole screen: leaving either bar up would put a
+        // strip of ordinary reader chrome along the edge of a driving surface.
+        fit: StackFit.expand,
         children: [
-          if (_busy != null)
-            Material(
-              color: theme.colorScheme.secondaryContainer,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
+          // Behind the overlay the reader is scenery. Painting over it is not
+          // enough: a screen reader would still walk the whole page of book
+          // text before reaching the six controls, and a tap landing in a
+          // safe-area inset — where Car Mode's own hit-test layer stops — would
+          // fall through to tap-to-read and restart the book somewhere else.
+          ExcludeSemantics(
+            excluding: inCarMode,
+            child: IgnorePointer(
+              ignoring: inCarMode,
+              child: _readerBody(theme),
+            ),
+          ),
+          // A sibling of the reader's body, never a child of it: night mode
+          // wraps the viewer in an inverting ColorFilter, and a driving UI
+          // rendered photo-negative is worse than no driving UI.
+          if (inCarMode) Positioned.fill(child: carOverlay()),
+        ],
+      ),
+      bottomNavigationBar: inCarMode ? null : _bottomBar(theme, isTextbook),
+    );
+  }
+
+  PreferredSizeWidget? _carModeBar(ThemeData theme, bool isTextbook) {
+    if (inCarMode) return null;
+    return _searching ? _searchBar(theme) : _titleBar(theme, isTextbook);
+  }
+
+  Widget _readerBody(ThemeData theme) {
+    return Column(
+      children: [
+        if (_busy != null)
+          Material(
+            color: theme.colorScheme.secondaryContainer,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: theme.colorScheme.onSecondaryContainer,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _busy!,
+                      style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSecondaryContainer,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _busy!,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSecondaryContainer,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          Expanded(
-            child: Row(
-              children: [
-                if (_showOutline && _outline.isNotEmpty) _outlinePanel(theme),
-                Expanded(child: _viewer(theme)),
-              ],
-            ),
           ),
-        ],
-      ),
-      bottomNavigationBar: _bottomBar(theme, isTextbook),
+        Expanded(
+          child: Row(
+            children: [
+              if (_showOutline && _outline.isNotEmpty) _outlinePanel(theme),
+              Expanded(child: _viewer(theme)),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -671,6 +915,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         ],
       ),
       actions: [
+        sleepChip(),
         if (_outline.isNotEmpty)
           IconButton(
             icon: Icon(_showOutline ? Icons.menu_open : Icons.toc),
@@ -698,6 +943,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
           icon: const Icon(Icons.more_vert),
           onSelected: (value) {
             switch (value) {
+              case 'car':
+                enterCarMode();
+              case 'sleep':
+                openSleepSheet();
               case 'music':
                 _openMusic();
               case 'highlight':
@@ -719,6 +968,31 @@ class _ReaderScreenState extends State<ReaderScreen> {
             }
           },
           itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'car',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.directions_car_outlined),
+                title: Text('Car Mode'),
+                subtitle: Text('Six large controls, nothing to read',
+                    style: TextStyle(fontSize: 11)),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'sleep',
+              child: ListTile(
+                dense: true,
+                leading: const Icon(Icons.bedtime_outlined),
+                title: const Text('Sleep timer'),
+                subtitle: Text(
+                  _chapters.hasChapters
+                      ? 'Duration, end of page, or end of chapter'
+                      : 'Duration, or end of page',
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            ),
+            const PopupMenuDivider(),
             const PopupMenuItem(
               value: 'music',
               child: ListTile(
@@ -928,6 +1202,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
           setState(() {
             _pageCount = document.pages.length;
             _outline = outline;
+            _chapters =
+                ChapterIndex.fromPdfOutline(outline, document.pages.length);
             _searcher = PdfTextSearcher(controller)..addListener(_onSearch);
           });
           widget.settings.setPageCount(widget.book.id, document.pages.length);
@@ -1022,7 +1298,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               value: _tts.rate,
               min: 0.1,
               max: 1.0,
-              onChanged: (v) => _tts.setRate(v),
+              onChanged: (v) => setSpeechRate(v),
             ),
           ),
           const VerticalDivider(indent: 14, endIndent: 14),

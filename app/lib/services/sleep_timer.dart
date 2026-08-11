@@ -204,6 +204,11 @@ class SleepTimer extends ChangeNotifier {
       _held = null;
       _isHeld = false;
       _deadline = _now().add(extra);
+      // This branch builds a whole new timer, so it owes the same clamp [arm]
+      // does: "+20 seconds" on a spent timer carrying a thirty-second fade
+      // would otherwise re-arm two thirds of the way down its own ramp, and the
+      // book would come back quieter than it went away.
+      _fadeSeconds = _fadeSeconds.clamp(0, extra.inSeconds);
     } else if (_isHeld) {
       _held = (_held ?? Duration.zero) + extra;
       _total = (_total ?? Duration.zero) + extra;

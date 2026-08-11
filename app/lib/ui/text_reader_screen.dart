@@ -1,11 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../models/book.dart';
 import '../models/annotation.dart';
 import '../models/bookmark.dart';
+import '../services/chapter_index.dart';
 import '../services/classifier.dart';
 import '../services/settings_service.dart';
+import '../services/sleep_timer.dart';
 import '../services/stats_service.dart';
 import '../services/text_document.dart';
 import '../services/media_player_service.dart';
@@ -13,6 +17,7 @@ import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
 import 'music_sheet.dart';
 import 'notes_sheet.dart';
+import 'reader_playback.dart';
 import 'summary_sheet.dart';
 
 /// Reader for `.txt`, `.md` and `.epub`.
@@ -36,7 +41,8 @@ class TextReaderScreen extends StatefulWidget {
   State<TextReaderScreen> createState() => _TextReaderScreenState();
 }
 
-class _TextReaderScreenState extends State<TextReaderScreen> {
+class _TextReaderScreenState extends State<TextReaderScreen>
+    with ReaderPlayback<TextReaderScreen> {
   late final TtsService _tts;
   final _music = MediaPlayerService();
   final _scroll = ScrollController();
@@ -51,6 +57,9 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
   int _sentenceOffset = 0;
   double _fontSize = 17;
   late bool _night = widget.settings.nightMode;
+
+  /// First pages of the book's sections, for the "end of chapter" sleep ending.
+  ChapterIndex _chapters = ChapterIndex.empty;
 
   List<_Sentence> _sentences = const [];
 
@@ -69,14 +78,117 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
     _tts.onSegment = (index) {
       if (!mounted) return;
       final active = index == null ? null : _sentenceOffset + index;
+      // Before the setState, and only when non-null: stop() clears the
+      // highlight by reporting null, and that must not clear the resume point.
+      if (active != null) noteSpoken(active);
       setState(() => _activeSentence = active);
       if (active != null && _autoScroll) _scrollTo(active);
     };
     _tts.onPageFinished = _autoAdvance;
+    initPlayback();
     _load();
   }
 
-  void _onTts() => setState(() {});
+  void _onTts() {
+    // Every start, stop and pause passes through here, so this is the one place
+    // the sleep countdown needs holding and releasing.
+    syncSleepHold();
+    setState(() {});
+  }
+
+  // ── the ReaderPlayback seam ──
+  //
+  // Car Mode and the sleep timer reach the book only through these. Car Mode
+  // never constructs a TtsService: two instances in one process render Piper
+  // chunks to byte-identical temp paths and eat each other's audio.
+
+  @override
+  TtsService get tts => _tts;
+
+  @override
+  SettingsService get settings => widget.settings;
+
+  @override
+  Book get book => widget.book;
+
+  @override
+  MediaPlayerService get music => _music;
+
+  @override
+  ChapterIndex get chapters => _chapters;
+
+  @override
+  String get bookTitle => widget.book.title;
+
+  @override
+  int get page => _page;
+
+  @override
+  int get pageCount => _doc?.pageCount ?? 0;
+
+  @override
+  int get sentenceCount => _sentences.length;
+
+  @override
+  String? get currentSentence {
+    final index = _activeSentence;
+    // Null rather than a guess: _splitSentences rebuilds this list on every page
+    // turn, and an index into the old one would be a RangeError.
+    if (index == null || index < 0 || index >= _sentences.length) return null;
+    return _sentences[index].text;
+  }
+
+  @override
+  bool get isBookmarkedHere =>
+      widget.settings.isBookmarked(widget.book.id, _page);
+
+  @override
+  String? get busyMessage => _loading ? 'Opening ${widget.book.title}…' : null;
+
+  @override
+  Future<void> togglePlay() => _togglePlay();
+
+  @override
+  Future<bool> bookmarkHere() async {
+    final current = _currentPage;
+    if (current == null) return false;
+    // Adds only, never removes: a mis-aimed second press in a car must not
+    // throw away the bookmark the first one made.
+    if (widget.settings.isBookmarked(widget.book.id, _page)) return false;
+    await widget.settings.addBookmark(
+      widget.book.id,
+      Bookmark(
+        page: _page,
+        preview: current.text.replaceAll('\n', ' ').trim(),
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (mounted) setState(() {});
+    return true;
+  }
+
+  @override
+  Future<void> speakAt(int pageNumber, int sentence,
+      {required bool resume}) async {
+    final doc = _doc;
+    if (doc == null) return;
+    final target = pageNumber.clamp(1, doc.pageCount);
+    // _goToPage re-splits synchronously, so the new page's sentences are in
+    // place by the time the index below is clamped against them.
+    if (target != _page) _goToPage(target);
+    if (_sentences.isEmpty) return;
+    // A negative index counts back from the end of the page.
+    final index = (sentence < 0 ? _sentences.length + sentence : sentence)
+        .clamp(0, _sentences.length - 1);
+    if (!resume) {
+      // Skipping while paused moves the cursor and stays paused.
+      _sentenceOffset = index;
+      noteSpeechStart(target, index);
+      setState(() => _activeSentence = index);
+      return;
+    }
+    await _speakFrom(index);
+  }
 
   Future<void> _load() async {
     try {
@@ -87,6 +199,7 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
         _doc = doc;
         _loading = false;
         _page = resume.clamp(1, doc.pageCount);
+        _chapters = ChapterIndex.fromTextChapters(doc.chapters, doc.pageCount);
       });
       widget.settings.setPageCount(widget.book.id, doc.pageCount);
       widget.settings.markOpened(widget.book.id);
@@ -159,13 +272,21 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
   /// viewport rather than jammed against the top edge — that is where the eye
   /// naturally sits when following along.
   void _scrollTo(int index) {
+    // Car Mode covers the text, so this would be a 420 ms animation per
+    // sentence with nothing on screen to show for it.
+    if (inCarMode) return;
     final key = _anchors[index];
     final ctx = key?.currentContext;
     if (ctx == null) return;
     Scrollable.ensureVisible(
       ctx,
       alignment: 0.35,
-      duration: const Duration(milliseconds: 420),
+      // One 420 ms slide per sentence is the most repetitive motion in the app;
+      // a reader who has asked the system to stop animating gets the same
+      // position without the travel.
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : const Duration(milliseconds: 420),
       curve: Curves.easeOutCubic,
     );
   }
@@ -189,8 +310,13 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
 
   Future<void> _speakFrom(int index) async {
     if (_sentences.isEmpty) return;
+    // Every path into speech funnels through here, so this is the one place the
+    // expiry latch is cleared. Scattering that across the entry points would
+    // leave the next one added needing to remember.
+    sleep.clearExpiry();
     await _tts.stop();
     _sentenceOffset = index;
+    noteSpeechStart(_page, index);
     setState(() => _activeSentence = index);
     await _tts.speakSegments(
       _sentences.sublist(index).map((s) => s.text).toList(),
@@ -216,14 +342,38 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
       _snack(TtsService.unavailableMessage);
       return;
     }
-    await _speakFrom(0);
+    if (_sentences.isEmpty) return;
+    // From the cursor, not the top: pause is stop on Linux, so restarting at
+    // sentence 0 would re-read the whole page after every pause.
+    await _speakFrom(resumeSentence.clamp(0, _sentences.length - 1));
   }
 
   void _autoAdvance() {
     final doc = _doc;
-    if (doc == null || _page >= doc.pageCount) return;
+    // The latch covers the window between this firing and speech restarting:
+    // the page turn below waits a whole frame, and a timer expiring in there
+    // would stop an engine that is already idle while the queued advance speaks
+    // anyway — all night.
+    if (!mounted || doc == null || sleep.hasExpired) return;
+    // TtsService reports "stopped" one line before it reports "page finished",
+    // so _onTts has already run syncSleepHold and held the timer by the time we
+    // get here — and SleepTimer.pageFinished is ignored while held. Lift that
+    // for the endings with no clock to freeze, or they never fire at all and
+    // the book reads on all night. Car Mode's hold is deliberate and stays: it
+    // exists so a section ending cannot silence the audio mid-drive.
+    if (sleep.mode != SleepMode.duration &&
+        !(inCarMode && widget.settings.sleepHoldInCar)) {
+      sleep.resume();
+    }
+    // The page has been read out, so the end-of-page and end-of-chapter endings
+    // land here. The latch they set is the same one the duration ending sets.
+    if (sleepEndsHere()) return;
+    if (_page >= doc.pageCount) return;
     _goToPage(_page + 1);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _speakFrom(0));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || sleep.hasExpired) return;
+      unawaited(_speakFrom(0));
+    });
   }
 
   Future<void> _toggleBookmark() async {
@@ -307,6 +457,9 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
 
   @override
   void dispose() {
+    // Before the engine goes: the sleep timer and the keep-awake inhibitor do
+    // not ride on the TTS session, so nothing else would ever cancel them.
+    disposePlayback();
     _tts.removeListener(_onTts);
     _tts.dispose();
     _music.dispose();
@@ -326,84 +479,167 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
 
     return Scaffold(
       backgroundColor: _night ? const Color(0xFF101014) : null,
-      appBar: AppBar(
-        backgroundColor: _night ? const Color(0xFF101014) : null,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.book.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleMedium),
-            if (doc != null)
-              Text('Page $_page of ${doc.pageCount} · ${widget.book.ext.toUpperCase()}',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: theme.colorScheme.outline)),
-          ],
-        ),
-        actions: [
-          if (doc != null && doc.chapters.isNotEmpty)
-            IconButton(
-              icon: const Icon(Icons.toc),
-              tooltip: 'Contents',
-              onPressed: _openChapters,
-            ),
-          IconButton(
-            icon: Icon(bookmarked ? Icons.bookmark : Icons.bookmark_border),
-            tooltip: bookmarked ? 'Remove bookmark' : 'Bookmark this page',
-            onPressed: _toggleBookmark,
+      // Car Mode is the whole screen or it is not a driving surface. It brings
+      // its own PopScope and Escape binding, so back exits the overlay rather
+      // than dumping a driver back into the library.
+      appBar: inCarMode ? null : _titleBar(theme, doc, bookmarked),
+      body: Stack(
+        // The body slot grows by both bars on the way into Car Mode, so the
+        // text below relayouts once each way. That is the price of the overlay
+        // being the whole screen: leaving either bar up would put a strip of
+        // ordinary reader chrome along the edge of a driving surface.
+        fit: StackFit.expand,
+        children: [
+          // Behind the overlay the reader is scenery. Painting over it is not
+          // enough: a screen reader would still walk the whole page of book
+          // text before reaching the six controls, and a tap landing in a
+          // safe-area inset — where Car Mode's own hit-test layer stops — would
+          // fall through to a sentence recogniser and restart the book there.
+          ExcludeSemantics(
+            excluding: inCarMode,
+            child: IgnorePointer(ignoring: inCarMode, child: _body(theme)),
           ),
-          IconButton(
-            icon: const Icon(Icons.library_music_outlined),
-            tooltip: 'Background audio',
-            onPressed: _openMusic,
-          ),
-          IconButton(
-            icon: const Icon(Icons.bookmarks_outlined),
-            tooltip: 'All bookmarks',
-            onPressed: _openBookmarks,
-          ),
-          Badge(
-            isLabelVisible:
-                widget.settings.annotationCount(widget.book.id) > 0,
-            label: Text('${widget.settings.annotationCount(widget.book.id)}'),
-            child: IconButton(
-              icon: const Icon(Icons.edit_note),
-              tooltip: 'Highlights and notes',
-              onPressed: _openNotes,
-            ),
-          ),
-          IconButton(
-            icon: Icon(_autoScroll
-                ? Icons.vertical_align_center
-                : Icons.swipe_vertical_outlined),
-            tooltip: _autoScroll
-                ? 'Auto-scroll follows the voice'
-                : 'Auto-scroll off',
-            isSelected: _autoScroll,
-            onPressed: () => setState(() => _autoScroll = !_autoScroll),
-          ),
-          IconButton(
-            icon: Icon(_night ? Icons.light_mode : Icons.dark_mode),
-            tooltip: _night ? 'Normal colours' : 'Night mode',
-            onPressed: () {
-              setState(() => _night = !_night);
-              widget.settings.setNightMode(_night);
-            },
-          ),
-          PopupMenuButton<double>(
-            icon: const Icon(Icons.format_size),
-            tooltip: 'Text size',
-            onSelected: (v) => setState(() => _fontSize = v),
-            itemBuilder: (context) => [
-              for (final size in [14.0, 17.0, 20.0, 24.0, 28.0])
-                PopupMenuItem(value: size, child: Text('${size.round()} pt')),
-            ],
-          ),
+          // A sibling of the reader's body, never a child of it.
+          if (inCarMode) Positioned.fill(child: carOverlay()),
         ],
       ),
-      body: _body(theme),
-      bottomNavigationBar: doc == null ? null : _bottomBar(theme),
+      bottomNavigationBar: doc == null || inCarMode ? null : _bottomBar(theme),
+    );
+  }
+
+  PreferredSizeWidget _titleBar(
+      ThemeData theme, TextDocument? doc, bool bookmarked) {
+    return AppBar(
+      backgroundColor: _night ? const Color(0xFF101014) : null,
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.book.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleMedium),
+          if (doc != null)
+            Text('Page $_page of ${doc.pageCount} · ${widget.book.ext.toUpperCase()}',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.outline)),
+        ],
+      ),
+      // Only the controls reached for mid-sentence stay as icons. The rest moved
+      // into a menu when Car Mode and the sleep timer arrived: nine actions
+      // overflow the bar on a phone, and an overflowing bar quietly hides
+      // whichever one was added last.
+      actions: [
+        sleepChip(),
+        if (doc != null && doc.chapters.isNotEmpty)
+          IconButton(
+            icon: const Icon(Icons.toc),
+            tooltip: 'Contents',
+            onPressed: _openChapters,
+          ),
+        IconButton(
+          icon: Icon(bookmarked ? Icons.bookmark : Icons.bookmark_border),
+          tooltip: bookmarked ? 'Remove bookmark' : 'Bookmark this page',
+          onPressed: _toggleBookmark,
+        ),
+        IconButton(
+          icon: Icon(_night ? Icons.light_mode : Icons.dark_mode),
+          tooltip: _night ? 'Normal colours' : 'Night mode',
+          onPressed: () {
+            setState(() => _night = !_night);
+            widget.settings.setNightMode(_night);
+          },
+        ),
+        PopupMenuButton<double>(
+          icon: const Icon(Icons.format_size),
+          tooltip: 'Text size',
+          onSelected: (v) => setState(() => _fontSize = v),
+          itemBuilder: (context) => [
+            for (final size in [14.0, 17.0, 20.0, 24.0, 28.0])
+              CheckedPopupMenuItem(
+                value: size,
+                checked: size == _fontSize,
+                child: Text('${size.round()} pt'),
+              ),
+          ],
+        ),
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert),
+          onSelected: (value) {
+            switch (value) {
+              case 'car':
+                enterCarMode();
+              case 'sleep':
+                openSleepSheet();
+              case 'music':
+                _openMusic();
+              case 'notes':
+                _openNotes();
+              case 'bookmarks':
+                _openBookmarks();
+              case 'autoscroll':
+                setState(() => _autoScroll = !_autoScroll);
+            }
+          },
+          itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'car',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.directions_car_outlined),
+                title: Text('Car Mode'),
+                subtitle: Text('Six large controls, nothing to read',
+                    style: TextStyle(fontSize: 11)),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'sleep',
+              child: ListTile(
+                dense: true,
+                leading: const Icon(Icons.bedtime_outlined),
+                title: const Text('Sleep timer'),
+                subtitle: Text(
+                  _chapters.hasChapters
+                      ? 'Duration, end of page, or end of chapter'
+                      : 'Duration, or end of page',
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            ),
+            const PopupMenuDivider(),
+            const PopupMenuItem(
+              value: 'music',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.library_music_outlined),
+                title: Text('Background audio'),
+              ),
+            ),
+            PopupMenuItem(
+              value: 'notes',
+              child: ListTile(
+                dense: true,
+                leading: const Icon(Icons.edit_note),
+                title: const Text('Highlights and notes'),
+                trailing: Text(
+                    '${widget.settings.annotationCount(widget.book.id)}'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'bookmarks',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.bookmarks_outlined),
+                title: Text('All bookmarks'),
+              ),
+            ),
+            CheckedPopupMenuItem(
+              value: 'autoscroll',
+              checked: _autoScroll,
+              child: const Text('Follow the voice'),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -547,7 +783,7 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
               value: _tts.rate,
               min: 0.1,
               max: 1.0,
-              onChanged: (v) => _tts.setRate(v),
+              onChanged: (v) => setSpeechRate(v),
             ),
           ),
           const VerticalDivider(indent: 14, endIndent: 14),

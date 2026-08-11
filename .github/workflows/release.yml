@@ -1,0 +1,187 @@
+# Builds a downloadable Linux app on every tag and attaches it to a GitHub
+# Release, so anyone can install without a store.
+#
+# Three artefacts, because "install it" means different things to different
+# people:
+#   - AppImage  — one file, chmod +x, run. No root, no package manager.
+#   - .tar.gz   — the raw bundle for anyone who prefers to unpack it themselves.
+#   - .deb      — for Debian/Ubuntu users who want it in their menu properly.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # Everything the desktop embedder and our helper libraries need.
+      # lld is the one that bites: /usr/lib/llvm-*/bin ships clang without a
+      # linker on some images, and the native build fails looking for it.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev \
+            libsecret-1-dev libjsoncpp-dev \
+            lld file desktop-file-utils
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: app
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+          flutter build linux --release
+
+      - name: Test
+        working-directory: app
+        run: flutter test --concurrency=1
+
+      # ── tarball ──
+      - name: Package tarball
+        working-directory: app/build/linux/x64/release
+        run: |
+          mv bundle audiobook-reader
+          tar czf "$GITHUB_WORKSPACE/audiobook-reader-${{ steps.version.outputs.version }}-linux-x64.tar.gz" audiobook-reader
+
+      # ── AppImage ──
+      #
+      # The point of this build: a single file that runs on any reasonably
+      # recent distribution with no install step and no root.
+      - name: Build AppImage
+        run: |
+          set -eu
+          APP=AppDir
+          mkdir -p $APP/usr/bin $APP/usr/share/applications $APP/usr/share/icons/hicolor/256x256/apps
+          cp -r app/build/linux/x64/release/audiobook-reader/* $APP/usr/bin/
+
+          cp app/packaging/linux/*.desktop \
+            $APP/usr/share/applications/io.github.developer1010x.AudiobookReader.desktop
+          cp app/packaging/linux/*.desktop $APP/io.github.developer1010x.AudiobookReader.desktop
+
+          # An AppImage needs an icon at the root; generate a placeholder if the
+          # repo has none yet so the build never fails on a missing asset.
+          if [ -f app/packaging/linux/icon-256.png ]; then
+            cp app/packaging/linux/icon-256.png $APP/io.github.developer1010x.AudiobookReader.png
+          else
+            sudo apt-get install -y imagemagick
+            convert -size 256x256 xc:'#5B6ABF' \
+              -gravity center -pointsize 120 -fill white -annotate 0 'A' \
+              $APP/io.github.developer1010x.AudiobookReader.png
+          fi
+          cp $APP/io.github.developer1010x.AudiobookReader.png \
+            $APP/usr/share/icons/hicolor/256x256/apps/
+
+          cat > $APP/AppRun <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export PATH="$HERE/usr/bin:$PATH"
+          export LD_LIBRARY_PATH="$HERE/usr/bin/lib:$LD_LIBRARY_PATH"
+          exec "$HERE/usr/bin/audiobook_reader" "$@"
+          EOF
+          chmod +x $APP/AppRun
+
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage --appimage-extract-and-run $APP \
+            "audiobook-reader-${{ steps.version.outputs.version }}-x86_64.AppImage"
+
+      # ── deb ──
+      - name: Build .deb
+        run: |
+          set -eu
+          PKG=debpkg
+          mkdir -p $PKG/DEBIAN $PKG/opt/audiobook-reader \
+                   $PKG/usr/share/applications $PKG/usr/bin \
+                   $PKG/usr/share/metainfo
+          cp -r app/build/linux/x64/release/audiobook-reader/* $PKG/opt/audiobook-reader/
+          cp app/packaging/linux/*.desktop $PKG/usr/share/applications/
+          cp app/packaging/linux/*.metainfo.xml $PKG/usr/share/metainfo/
+          ln -s /opt/audiobook-reader/audiobook_reader $PKG/usr/bin/audiobook-reader
+
+          cat > $PKG/DEBIAN/control <<EOF
+          Package: audiobook-reader
+          Version: ${{ steps.version.outputs.version }}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: S Prajwall Narayana <sprajwalln@gmail.com>
+          Depends: libgtk-3-0, libsecret-1-0, libjsoncpp25 | libjsoncpp-dev
+          Recommends: tesseract-ocr, speech-dispatcher, speech-dispatcher-espeak-ng
+          Description: Private reader and audiobook player for your own library
+           Read, listen to and study your own books. PDF, EPUB, Markdown and text,
+           with neural text-to-speech, follow-along highlighting, text recognition
+           for scans, and optional AI study aids that run locally by default.
+          EOF
+
+          dpkg-deb --build $PKG \
+            "audiobook-reader_${{ steps.version.outputs.version }}_amd64.deb"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Audiobook Reader ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            *.AppImage
+            *.tar.gz
+            *.deb
+          body: |
+            ## Install
+
+            **Anything (no root, no package manager)**
+            ```bash
+            chmod +x audiobook-reader-*.AppImage
+            ./audiobook-reader-*.AppImage
+            ```
+
+            **Debian / Ubuntu**
+            ```bash
+            sudo dpkg -i audiobook-reader_*_amd64.deb
+            sudo apt -f install    # if dependencies are missing
+            ```
+
+            **Tarball**
+            ```bash
+            tar xzf audiobook-reader-*-linux-x64.tar.gz
+            ./audiobook-reader/audiobook_reader
+            ```
+
+            ## Optional extras
+
+            The app works without these and tells you what is missing when a
+            feature needs one.
+
+            ```bash
+            sudo apt install tesseract-ocr                        # scanned pages
+            sudo apt install speech-dispatcher speech-dispatcher-espeak-ng
+            curl -fsSL https://ollama.com/install.sh | sh         # local AI
+            ```
+
+            For a neural voice rather than the robotic system one, install Piper
+            and a voice — the app shows the exact commands in Settings.
