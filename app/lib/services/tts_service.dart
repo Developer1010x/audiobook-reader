@@ -320,14 +320,21 @@ class TtsService extends ChangeNotifier {
 
   /// Play one file and wait for it to finish.
   Future<void> _play(File audio, int session) async {
-    final player = PiperTts.player!;
-    final process = await Process.start(
-      player,
-      PiperTts.playerArgs(player, audio.path),
-    );
-    _linuxProcess = process;
-    await process.exitCode;
-    _cleanup(audio);
+    try {
+      final player = PiperTts.player!;
+      final process = await Process.start(
+        player,
+        PiperTts.playerArgs(player, audio.path),
+      );
+      _linuxProcess = process;
+      await process.exitCode;
+    } finally {
+      // The file goes whether or not the player ever started. This chunk is the
+      // one path _discardRendered cannot cover — it was claimed out of the
+      // window before playing — so a missing or broken audio tool would
+      // otherwise strand one WAV in /tmp per chunk.
+      _cleanup(audio);
+    }
   }
 
   /// Split into chunks that end on sentence boundaries where possible, so the
@@ -372,6 +379,13 @@ class TtsService extends ChangeNotifier {
   Future<void> stop() async {
     if (_usesLinuxBackend) {
       _session++; // invalidates any in-flight Piper chunk pipeline
+      // That pipeline will not clear the spinner itself: its finally only
+      // restores state for the *current* session. Stopping while the first
+      // chunk is still rendering would otherwise leave "preparing" up for good,
+      // and the Play button stuck as a spinner. Cleared here, synchronously
+      // with the session bump, so a speak() racing this stop cannot have its
+      // own spinner cleared by us afterwards.
+      _preparing = false;
       onSegment?.call(null);
       final process = _linuxProcess;
       _linuxProcess = null; // clear first, so the exit handler stays quiet
@@ -407,7 +421,16 @@ class TtsService extends ChangeNotifier {
 
   @override
   void dispose() {
+    // Killing the player only ends the chunk being heard. Without invalidating
+    // the session the Piper loop carries straight on to the next look-ahead
+    // render — speaking after the screen is gone, and finally calling
+    // notifyListeners() on a disposed notifier. Bumping the session is the same
+    // signal stop() uses, so the pipeline exits through its own cleanup and its
+    // unplayed renders are discarded.
+    _session++;
+    _preparing = false;
     _linuxProcess?.kill();
+    _linuxProcess = null;
     if (!_usesLinuxBackend) _tts.stop();
     super.dispose();
   }

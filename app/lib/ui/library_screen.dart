@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -5,7 +7,9 @@ import '../models/book.dart';
 import '../models/library_node.dart';
 import '../services/library_service.dart';
 import '../services/settings_service.dart';
+import '../services/recommender.dart';
 import '../services/stats_service.dart';
+import '../services/theme_controller.dart';
 import '../services/text_document.dart';
 import 'reader_screen.dart';
 import 'settings_screen.dart';
@@ -25,10 +29,12 @@ enum LibrarySort {
 class LibraryScreen extends StatefulWidget {
   final SettingsService settings;
   final StatsService stats;
+  final ThemeController theme;
   const LibraryScreen({
     super.key,
     required this.settings,
     required this.stats,
+    required this.theme,
   });
 
   @override
@@ -46,6 +52,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _gridView = true;
   bool _favouritesOnly = false;
   LibrarySort _sort = LibrarySort.title;
+
+  /// Suggestions from the local heuristic model. Recomputed after a scan and
+  /// after returning from a book, since progress and notes will have moved.
+  List<Recommendation> _suggestions = const [];
 
   LibraryFolder? get _current => _stack.isEmpty ? _root : _stack.last;
   bool get _searching => _query.trim().isNotEmpty;
@@ -72,6 +82,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _stack.clear();
         _loading = false;
       });
+      unawaited(_recompute());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -103,6 +114,34 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
       // Progress and bookmarks may have changed while reading.
     ).then((_) => mounted ? setState(() {}) : null);
+  }
+
+  /// Re-run the recommender. Never blocks the UI: the model runs off-thread on
+  /// a real library, and a failure here should cost a shelf, not the screen.
+  Future<void> _recompute() async {
+    if (_all.isEmpty) return;
+    try {
+      final input = buildRecommenderInput(
+        books: _all,
+        recentIds: widget.settings.recentBooks,
+        favouriteIds: widget.settings.favourites,
+        progressOf: (id) {
+          final page = widget.settings.lastPage(id);
+          final total = widget.settings.pageCount(id);
+          if (page == null || total == null || total <= 0) return 0;
+          return (page / total).clamp(0.0, 1.0);
+        },
+        typeOf: (id) =>
+            (widget.settings.typeOverride(id) ??
+                    widget.settings.cachedClassification(id))
+                ?.name,
+        annotationsOf: widget.settings.annotationCount,
+      );
+      final out = await Recommender.suggest(input);
+      if (mounted) setState(() => _suggestions = out);
+    } catch (_) {
+      // A missing shelf is better than a broken library screen.
+    }
   }
 
   Future<void> _toggleFavourite(Book book) async {
@@ -206,7 +245,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => SettingsScreen(settings: widget.settings),
+                    builder: (_) => SettingsScreen(
+                      settings: widget.settings,
+                      theme: widget.theme,
+                    ),
                   ),
                 ).then((_) => mounted ? setState(() {}) : null);
             }
@@ -357,6 +399,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _sectionHeader('Continue reading'),
         _shelfSliver(shelf),
       ],
+      if (_atRoot && !_favouritesOnly && _suggestions.isNotEmpty) ...[
+        _sectionHeader('Suggested for you'),
+        _suggestionSliver(),
+      ],
       if (folders.isNotEmpty) ...[
         if (shelf.isNotEmpty) _sectionHeader('Folders'),
         _foldersSliver(folders),
@@ -410,6 +456,41 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ),
         ),
       );
+
+  /// Suggestions from the local model, each captioned with why it is here.
+  ///
+  /// The caption is not decoration: an unexplained recommendation is one the
+  /// user cannot judge, so they stop trusting the whole shelf.
+  Widget _suggestionSliver() {
+    final byId = {for (final b in _all) b.id: b};
+    final picks = _suggestions
+        .map((r) => (book: byId[r.bookId], reason: r.reason))
+        .where((e) => e.book != null)
+        .toList();
+    if (picks.isEmpty) return const SliverToBoxAdapter();
+
+    return SliverToBoxAdapter(
+      child: SizedBox(
+        height: 208,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          itemCount: picks.length,
+          separatorBuilder: (_, index) => const SizedBox(width: 14),
+          itemBuilder: (context, i) => SizedBox(
+            width: 98,
+            child: BookPoster(
+              book: picks[i].book!,
+              settings: widget.settings,
+              onTap: () => _open(picks[i].book!),
+              onToggleFavourite: () => _toggleFavourite(picks[i].book!),
+              subtitleOverride: picks[i].reason.label,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   String? _progressLabel(Book book) {
     final page = widget.settings.lastPage(book.id);

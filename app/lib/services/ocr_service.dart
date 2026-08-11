@@ -110,10 +110,16 @@ class OcrService {
       if (rendered == null) throw OcrException('Could not render page $page.');
       try {
         final image = await rendered.createImage();
-        final png = await image.toByteData(format: ImageByteFormat.png);
-        image.dispose();
-        if (png == null) throw OcrException('Could not encode page $page.');
-        await imageFile.writeAsBytes(png.buffer.asUint8List(), flush: true);
+        // dispose() must be in a finally: a throw from toByteData would
+        // otherwise strand a full-page bitmap, and pages now render several at
+        // a time so one leak becomes cpuPool leaks.
+        try {
+          final png = await image.toByteData(format: ImageByteFormat.png);
+          if (png == null) throw OcrException('Could not encode page $page.');
+          await imageFile.writeAsBytes(png.buffer.asUint8List(), flush: true);
+        } finally {
+          image.dispose();
+        }
       } finally {
         rendered.dispose();
       }
@@ -125,13 +131,18 @@ class OcrService {
     // Tesseract appends .txt to the output base itself.
     final outBase = p.join(dir.path, _key(book, page));
     final tesseract = RuntimeEnv.findBinary('tesseract')!;
-    final result = await Process.run(tesseract, [imageFile.path, outBase]);
 
-    // The rendered PNG is large and only needed as OCR input; the text is what
-    // gets cached.
+    final ProcessResult result;
     try {
-      await imageFile.delete();
-    } catch (_) {}
+      result = await Process.run(tesseract, [imageFile.path, outBase]);
+    } finally {
+      // The rendered PNG is several megabytes and is only OCR input. Deleting
+      // it in a finally means a crashed or missing Tesseract does not leave the
+      // cache filling with page images.
+      try {
+        await imageFile.delete();
+      } catch (_) {}
+    }
 
     if (result.exitCode != 0) {
       throw OcrException('Tesseract failed: ${result.stderr}');

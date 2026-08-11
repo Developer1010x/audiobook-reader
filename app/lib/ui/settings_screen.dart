@@ -7,12 +7,18 @@ import '../services/llm/ollama_manager.dart';
 import '../services/llm/summary_cache.dart';
 import '../services/ocr_service.dart';
 import '../services/settings_service.dart';
+import '../services/theme_controller.dart';
 import '../services/system_info.dart';
 import 'model_manager_sheet.dart';
 
 class SettingsScreen extends StatefulWidget {
   final SettingsService settings;
-  const SettingsScreen({super.key, required this.settings});
+  final ThemeController theme;
+  const SettingsScreen({
+    super.key,
+    required this.settings,
+    required this.theme,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -223,6 +229,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.symmetric(vertical: 8),
         children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+            child: Text('Appearance', style: theme.textTheme.titleMedium),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: SegmentedButton<ThemeMode>(
+              segments: const [
+                ButtonSegment(
+                  value: ThemeMode.light,
+                  icon: Icon(Icons.light_mode_outlined),
+                  label: Text('Light'),
+                ),
+                ButtonSegment(
+                  value: ThemeMode.system,
+                  icon: Icon(Icons.brightness_auto_outlined),
+                  label: Text('System'),
+                ),
+                ButtonSegment(
+                  value: ThemeMode.dark,
+                  icon: Icon(Icons.dark_mode_outlined),
+                  label: Text('Dark'),
+                ),
+              ],
+              selected: {widget.theme.mode},
+              onSelectionChanged: (s) => widget.theme.setMode(s.first),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+            child: Wrap(
+              spacing: 12,
+              runSpacing: 10,
+              children: [
+                for (final accent in AccentColour.values)
+                  Tooltip(
+                    message: accent.label,
+                    child: InkWell(
+                      onTap: () => widget.theme.setAccent(accent),
+                      borderRadius: BorderRadius.circular(22),
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: accent.seed,
+                          shape: BoxShape.circle,
+                          border: widget.theme.accent == accent
+                              ? Border.all(
+                                  color: theme.colorScheme.onSurface, width: 2.5)
+                              : null,
+                        ),
+                        child: widget.theme.accent == accent
+                            ? const Icon(Icons.check,
+                                size: 16, color: Colors.white)
+                            : null,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          SwitchListTile(
+            title: const Text('High contrast'),
+            subtitle: const Text(
+              'Stronger separation between surfaces and text.',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: widget.theme.highContrast,
+            onChanged: (v) => widget.theme.setHighContrast(v),
+          ),
+          const Divider(height: 32),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
             child: Text('AI provider', style: theme.textTheme.titleMedium),

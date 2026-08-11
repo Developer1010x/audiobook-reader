@@ -131,6 +131,37 @@ class CoverService {
     _pump();
   }
 
+  /// Serial number for scratch files, so two renders of the same book — which
+  /// [clear] can produce by dropping the memo entry while a render is still
+  /// running — cannot write to the same temp path.
+  static int _tmpSeq = 0;
+
+  /// Write [bytes] to [file] via a temp file and a rename.
+  ///
+  /// A direct `writeAsBytes` that fails or is killed part-way leaves a
+  /// truncated PNG behind, and the `exists && length > 0` check treats that as
+  /// a good cover forever after — a book whose cover never comes back, even
+  /// across restarts. The rename is atomic, so the cache only ever holds whole
+  /// files.
+  static Future<File?> _writeAtomically(File file, Uint8List bytes) async {
+    final tmp = File('${file.path}.${_tmpSeq++}.tmp');
+    try {
+      await tmp.writeAsBytes(bytes, flush: true);
+      // A zero-length leftover from an older truncated write would make rename
+      // fail on Windows, where the destination must not exist.
+      if (await file.exists()) await file.delete();
+      await tmp.rename(file.path);
+      return file;
+    } catch (_) {
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {
+        // Nothing left to do; a stray temp file is cleared with the cache.
+      }
+      return null;
+    }
+  }
+
   static Future<File?> _render(Book book, int width) async {
     try {
       final dir = await _dir();
@@ -149,11 +180,16 @@ class CoverService {
         if (image == null) return null;
         try {
           final ui = await image.createImage();
-          final png = await ui.toByteData(format: ImageByteFormat.png);
-          ui.dispose();
+          final ByteData? png;
+          try {
+            png = await ui.toByteData(format: ImageByteFormat.png);
+          } finally {
+            // Encoding can throw on a huge page; the decoded bitmap has to go
+            // back either way or the native allocation outlives the render.
+            ui.dispose();
+          }
           if (png == null) return null;
-          await file.writeAsBytes(png.buffer.asUint8List(), flush: true);
-          return file;
+          return await _writeAtomically(file, png.buffer.asUint8List());
         } finally {
           image.dispose();
         }
