@@ -85,24 +85,90 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _editModel(LlmProvider provider) async {
     final current =
         widget.settings.modelFor(provider.id) ?? provider.defaultModel;
+
+    // For Ollama the installed list is the truth; the hard-coded suggestions
+    // are only a starting point and may not be pulled.
+    final installed = provider is OllamaProvider
+        ? await OllamaProvider.installedModels()
+        : const <String>[];
+    final options = <String>{
+      ...installed,
+      ...provider.suggestedModels,
+      current,
+    }.toList();
+
+    if (!mounted) return;
+    final controller = TextEditingController(text: current);
+
     final chosen = await showDialog<String>(
       context: context,
-      builder: (context) => SimpleDialog(
+      builder: (context) => AlertDialog(
         title: Text('${provider.name} model'),
-        children: [
-          for (final m in provider.suggestedModels)
-            RadioListTile<String>(
-              value: m,
-              groupValue: current,
-              title: Text(m, style: const TextStyle(fontSize: 13)),
-              onChanged: (v) => Navigator.pop(context, v),
-            ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (provider is OllamaProvider)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    installed.isEmpty
+                        ? 'Ollama is not reachable — showing suggestions only.'
+                        : '${installed.length} installed locally.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final m in options)
+                      RadioListTile<String>(
+                        value: m,
+                        // ignore: deprecated_member_use
+                        groupValue: current,
+                        dense: true,
+                        title: Text(m, style: const TextStyle(fontSize: 13)),
+                        subtitle: installed.contains(m)
+                            ? const Text('installed',
+                                style: TextStyle(fontSize: 10))
+                            : null,
+                        // ignore: deprecated_member_use
+                        onChanged: (v) => Navigator.pop(context, v),
+                      ),
+                  ],
+                ),
+              ),
+              const Divider(),
+              TextField(
+                controller: controller,
+                decoration: const InputDecoration(
+                  labelText: 'Or type any model name',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                onSubmitted: (v) => Navigator.pop(context, v.trim()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Use this'),
+          ),
         ],
       ),
     );
-    if (chosen == null) return;
+    if (chosen == null || chosen.isEmpty) return;
     await widget.settings.setModelFor(provider.id, chosen);
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
   @override

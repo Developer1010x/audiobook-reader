@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../models/book.dart';
+import '../models/annotation.dart';
 import '../models/bookmark.dart';
 import '../services/classifier.dart';
 import '../services/settings_service.dart';
@@ -9,6 +10,7 @@ import '../services/stats_service.dart';
 import '../services/text_document.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
+import 'notes_sheet.dart';
 import 'summary_sheet.dart';
 
 /// Reader for `.txt`, `.md` and `.epub`.
@@ -192,6 +194,16 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
     );
   }
 
+  /// Start reading at the sentence containing [offset] in the page text.
+  Future<void> _speakFromOffset(int offset) async {
+    for (var i = 0; i < _sentences.length; i++) {
+      if (offset < _sentences[i].end) {
+        await _speakFrom(i);
+        return;
+      }
+    }
+  }
+
   Future<void> _togglePlay() async {
     if (_tts.isSpeaking) {
       await _tts.stop();
@@ -228,6 +240,38 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
       );
     }
     setState(() {});
+  }
+
+  /// Turn the current selection into a highlight, optionally with a note.
+  Future<void> _annotate(String quote) async {
+    if (quote.trim().isEmpty) return;
+    final edit = await showAnnotationEditor(context: context, quote: quote);
+    if (edit == null) return;
+    await widget.settings.addAnnotation(
+      widget.book.id,
+      Annotation(
+        id: '${DateTime.now().microsecondsSinceEpoch}',
+        page: _page,
+        quote: quote.trim(),
+        note: edit.note,
+        color: edit.color,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  void _openNotes() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => NotesSheet(
+        book: widget.book,
+        settings: widget.settings,
+        onGoToPage: _goToPage,
+      ),
+    ).then((_) => mounted ? setState(() {}) : null);
   }
 
   void _openBookmarks() {
@@ -299,6 +343,16 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
             icon: const Icon(Icons.bookmarks_outlined),
             tooltip: 'All bookmarks',
             onPressed: _openBookmarks,
+          ),
+          Badge(
+            isLabelVisible:
+                widget.settings.annotationCount(widget.book.id) > 0,
+            label: Text('${widget.settings.annotationCount(widget.book.id)}'),
+            child: IconButton(
+              icon: const Icon(Icons.edit_note),
+              tooltip: 'Highlights and notes',
+              onPressed: _openNotes,
+            ),
           ),
           IconButton(
             icon: Icon(_autoScroll
@@ -379,6 +433,30 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
             // A comfortable measure — long lines are hard to track by eye.
             constraints: const BoxConstraints(maxWidth: 720),
             child: SelectableText.rich(
+              contextMenuBuilder: (context, editable) {
+                final value = editable.textEditingValue;
+                final selected = value.selection.textInside(value.text);
+                return AdaptiveTextSelectionToolbar.buttonItems(
+                  anchors: editable.contextMenuAnchors,
+                  buttonItems: [
+                    ...editable.contextMenuButtonItems,
+                    ContextMenuButtonItem(
+                      label: 'Highlight',
+                      onPressed: () {
+                        ContextMenuController.removeAny();
+                        _annotate(selected);
+                      },
+                    ),
+                    ContextMenuButtonItem(
+                      label: 'Read from here',
+                      onPressed: () {
+                        ContextMenuController.removeAny();
+                        _speakFromOffset(value.selection.start);
+                      },
+                    ),
+                  ],
+                );
+              },
               TextSpan(
                 children: [
                   for (var i = 0; i < _sentences.length; i++)

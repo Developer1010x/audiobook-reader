@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../models/book.dart';
+import '../models/annotation.dart';
 import '../models/bookmark.dart';
 import '../services/classifier.dart';
 import '../services/ocr_service.dart';
@@ -13,6 +14,7 @@ import '../services/settings_service.dart';
 import '../services/stats_service.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
+import 'notes_sheet.dart';
 import 'summary_sheet.dart';
 
 class ReaderScreen extends StatefulWidget {
@@ -400,6 +402,50 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (mounted) setState(() {});
   }
 
+  /// Highlight the sentence currently spoken (or the first on the page), since
+  /// the PDF viewer's own selection is not exposed to us here.
+  Future<void> _annotateCurrent() async {
+    final speech = await _loadSpeech(_controller.pageNumber ?? _page);
+    if (speech == null || speech.isEmpty) {
+      _snack('No selectable text on this page.');
+      return;
+    }
+    final index = _activeSegment ?? 0;
+    final quote = speech
+        .segments[index.clamp(0, speech.segments.length - 1)]
+        .text
+        .trim();
+
+    if (!mounted) return;
+    final edit = await showAnnotationEditor(context: context, quote: quote);
+    if (edit == null) return;
+    await widget.settings.addAnnotation(
+      widget.book.id,
+      Annotation(
+        id: '${DateTime.now().microsecondsSinceEpoch}',
+        page: _controller.pageNumber ?? _page,
+        quote: quote,
+        note: edit.note,
+        color: edit.color,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  void _openNotes() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => NotesSheet(
+        book: widget.book,
+        settings: widget.settings,
+        onGoToPage: (page) => _controller.goToPage(pageNumber: page),
+      ),
+    ).then((_) => mounted ? setState(() {}) : null);
+  }
+
   void _openBookmarks() {
     showModalBottomSheet(
       context: context,
@@ -638,6 +684,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
           icon: const Icon(Icons.more_vert),
           onSelected: (value) {
             switch (value) {
+              case 'highlight':
+                _annotateCurrent();
+              case 'notes':
+                _openNotes();
               case 'bookmarks':
                 _openBookmarks();
               case 'voice':
@@ -653,6 +703,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
             }
           },
           itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'highlight',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.format_quote),
+                title: Text('Highlight this sentence'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'notes',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.edit_note),
+                title: Text('Highlights and notes'),
+              ),
+            ),
             const PopupMenuItem(
               value: 'bookmarks',
               child: ListTile(

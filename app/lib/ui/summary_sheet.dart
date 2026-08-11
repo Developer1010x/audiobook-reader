@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../services/llm/ai_mode.dart';
 import '../services/llm/llm_provider.dart';
+import '../services/llm/llm_error.dart';
 import '../services/llm/summariser.dart';
+import '../services/llm/usage_ledger.dart';
 import '../services/llm/summary_length.dart';
 import '../services/ocr_service.dart';
 import '../services/reader_service.dart';
@@ -48,6 +50,16 @@ class _SummarySheetState extends State<SummarySheet> {
   int? _charCount;
 
   final _tts = TtsService();
+  CancellationToken? _cancel;
+  UsageLedger? _ledger;
+
+  @override
+  void initState() {
+    super.initState();
+    UsageLedger.load().then((l) {
+      if (mounted) setState(() => _ledger = l);
+    });
+  }
 
   LlmProvider get _provider => providerById(widget.settings.providerId);
 
@@ -73,7 +85,7 @@ class _SummarySheetState extends State<SummarySheet> {
               },
             );
       if (text.trim().isEmpty) {
-        throw const LlmException(
+        throw const InvalidRequest(
           'No text on those pages, and OCR could not read them either.',
         );
       }
@@ -91,6 +103,12 @@ class _SummarySheetState extends State<SummarySheet> {
 
       // Summariser chunks when the text exceeds the provider's context, so a
       // whole chapter is summarised properly instead of silently truncated.
+      final token = CancellationToken();
+      _cancel = token;
+
+      // Streamed output: the answer appears as it is generated rather than
+      // after it completes.
+      final buffer = StringBuffer();
       final out = await Summariser.run(
         provider: provider,
         text: text,
@@ -98,8 +116,14 @@ class _SummarySheetState extends State<SummarySheet> {
         length: _length,
         model: model,
         apiKey: key,
+        cancel: token,
+        ledger: _ledger,
         onProgress: (stage) {
           if (mounted) setState(() => _stage = stage);
+        },
+        onDelta: (delta) {
+          buffer.write(delta);
+          if (mounted) setState(() => _result = buffer.toString());
         },
       );
       if (!mounted) return;
@@ -120,6 +144,9 @@ class _SummarySheetState extends State<SummarySheet> {
 
   @override
   void dispose() {
+    // Closing the sheet must stop work nobody will see — on a cloud provider
+    // that is money still being spent.
+    _cancel?.cancel();
     _tts.dispose();
     super.dispose();
   }
@@ -214,6 +241,16 @@ class _SummarySheetState extends State<SummarySheet> {
           ),
           const SizedBox(height: 16),
 
+          if (_running)
+            OutlinedButton.icon(
+              onPressed: () {
+                _cancel?.cancel();
+                setState(() { _running = false; _stage = 'Cancelled.'; });
+              },
+              icon: const Icon(Icons.stop, size: 18),
+              label: const Text('Stop'),
+            )
+          else
           FilledButton.icon(
             onPressed: _running ? null : _run,
             icon: _running

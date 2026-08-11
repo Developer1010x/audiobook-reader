@@ -2,6 +2,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book.dart';
+import '../models/annotation.dart';
 import '../models/bookmark.dart';
 import 'llm/ai_mode.dart';
 import 'llm/summary_length.dart';
@@ -111,6 +112,28 @@ class SettingsService {
 
   bool isBookmarked(String bookId, int page) =>
       bookmarks(bookId).any((b) => b.page == page);
+
+  // ── annotations & notes ──
+  List<Annotation> annotations(String bookId) =>
+      Annotation.decode(_prefs.getString('annotations:$bookId'));
+
+  Future<void> setAnnotations(String bookId, List<Annotation> items) =>
+      _prefs.setString('annotations:$bookId', Annotation.encode(items));
+
+  Future<void> addAnnotation(String bookId, Annotation a) async {
+    final list = annotations(bookId).toList()
+      ..removeWhere((x) => x.id == a.id) // editing replaces in place
+      ..add(a)
+      ..sort((x, y) => x.page.compareTo(y.page));
+    await setAnnotations(bookId, list);
+  }
+
+  Future<void> removeAnnotation(String bookId, String id) async {
+    final list = annotations(bookId).toList()..removeWhere((a) => a.id == id);
+    await setAnnotations(bookId, list);
+  }
+
+  int annotationCount(String bookId) => annotations(bookId).length;
 
   // ── favourites ──
   Set<String> get favourites =>

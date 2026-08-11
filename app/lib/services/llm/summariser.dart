@@ -1,6 +1,12 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'ai_mode.dart';
+import 'llm_error.dart';
 import 'llm_provider.dart';
+import 'summary_cache.dart';
 import 'summary_length.dart';
+import 'usage_ledger.dart';
 
 /// Runs a summary over text of any length.
 ///
@@ -9,11 +15,10 @@ import 'summary_length.dart';
 /// only part of it and summarises that, producing a confident answer about text
 /// it never read. That is the worst kind of wrong.
 ///
-/// **The approach.** If the text fits, one request. If it does not, map-reduce:
-/// each chunk is condensed to notes (the *map*), then the notes are summarised
-/// into the final answer (the *reduce*). Chunks split on paragraph or sentence
-/// boundaries so no chunk starts mid-clause, and each carries a little overlap
-/// so an idea spanning a boundary is not lost from both sides.
+/// **The pipeline.** cache → plan → map (bounded parallel, with retry) → reduce
+/// → cache. Chunks split on paragraph or sentence boundaries so none starts
+/// mid-clause, and each carries a little overlap so an idea spanning a boundary
+/// is not lost from both sides.
 class Summariser {
   /// Rough tokens-per-character for English prose. Deliberately pessimistic:
   /// under-filling the window wastes a little capacity, over-filling silently
@@ -24,9 +29,11 @@ class Summariser {
   /// boundary still has context on one side.
   static const _overlapChars = 400;
 
+  static const _maxAttempts = 4;
+  static const _baseBackoff = Duration(milliseconds: 700);
+
   static int estimateTokens(String text) => (text.length / _charsPerToken).ceil();
 
-  /// Whether [text] would need chunking for [provider].
   static bool needsChunking(String text, LlmProvider provider) =>
       text.length > provider.inputCharBudget;
 
@@ -38,92 +45,315 @@ class Summariser {
     String? model,
     String? apiKey,
     void Function(String stage)? onProgress,
+    TokenSink? onDelta,
+    CancellationToken? cancel,
+    UsageLedger? ledger,
+    bool useCache = true,
   }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
-      throw const LlmException('Nothing to summarise — no text on those pages.');
+      throw const InvalidRequest('Nothing to summarise — no text on those pages.');
+    }
+    cancel?.throwIfCancelled();
+
+    final resolvedModel = model ?? provider.defaultModel;
+
+    // ── cache ──
+    final cacheKey = SummaryCache.key(
+      text: trimmed,
+      mode: mode,
+      length: length,
+      provider: provider.id,
+      model: resolvedModel,
+    );
+    if (useCache) {
+      final hit = await SummaryCache.get(cacheKey);
+      if (hit != null) {
+        onProgress?.call('From cache — no request made.');
+        onDelta?.call(hit);
+        return hit;
+      }
     }
 
     final budget = provider.inputCharBudget;
+    final result = trimmed.length <= budget
+        ? await _singlePass(
+            provider: provider,
+            text: trimmed,
+            mode: mode,
+            length: length,
+            model: resolvedModel,
+            apiKey: apiKey,
+            onProgress: onProgress,
+            onDelta: onDelta,
+            cancel: cancel,
+          )
+        : await _mapReduce(
+            provider: provider,
+            text: trimmed,
+            mode: mode,
+            length: length,
+            model: resolvedModel,
+            apiKey: apiKey,
+            budget: budget,
+            onProgress: onProgress,
+            onDelta: onDelta,
+            cancel: cancel,
+          );
 
-    // Fits in one request: no need to pay for two round trips or lose fidelity
-    // to an intermediate condensation step.
-    if (trimmed.length <= budget) {
-      onProgress?.call('Summarising ${estimateTokens(trimmed)} tokens…');
-      return provider.summarise(
-        trimmed,
+    await ledger?.record(
+      provider: provider.id,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+    );
+
+    if (useCache) {
+      await SummaryCache.put(cacheKey, result.text, meta: {
+        'provider': provider.id,
+        'model': resolvedModel,
+        'inputTokens': result.inputTokens,
+        'outputTokens': result.outputTokens,
+      });
+    }
+    return result.text;
+  }
+
+  // ── single pass ──
+
+  static Future<LlmResult> _singlePass({
+    required LlmProvider provider,
+    required String text,
+    required AiMode mode,
+    required SummaryLength length,
+    required String model,
+    String? apiKey,
+    void Function(String stage)? onProgress,
+    TokenSink? onDelta,
+    CancellationToken? cancel,
+  }) {
+    onProgress?.call('Summarising ~${estimateTokens(text)} tokens…');
+    return _withRetry(
+      provider: provider,
+      onProgress: onProgress,
+      cancel: cancel,
+      attempt: () => provider.generate(
+        text,
         model: model,
         apiKey: apiKey,
         mode: mode,
         length: length,
-      );
-    }
-
-    final chunks = chunk(trimmed, budget);
-    onProgress?.call(
-      '${trimmed.length ~/ 1000}k characters — reading in ${chunks.length} parts…',
-    );
-
-    // ── map ──
-    final notes = <String>[];
-    for (var i = 0; i < chunks.length; i++) {
-      onProgress?.call('Reading part ${i + 1} of ${chunks.length}…');
-      final note = await provider.summarise(
-        chunks[i],
-        model: model,
-        apiKey: apiKey,
-        mode: AiMode.summary,
-        length: SummaryLength.standard,
-        promptOverride: _mapPrompt(i + 1, chunks.length),
-      );
-      notes.add('--- Part ${i + 1} of ${chunks.length} ---\n$note');
-    }
-
-    // ── reduce ──
-    onProgress?.call('Combining ${chunks.length} parts…');
-    final combined = notes.join('\n\n');
-
-    // Pathological case: so many parts that the notes themselves overflow.
-    // Condense the notes once more rather than truncating them.
-    final reducible = combined.length > budget
-        ? await _condense(
-            combined, provider, budget, model, apiKey, onProgress)
-        : combined;
-
-    return provider.summarise(
-      reducible,
-      model: model,
-      apiKey: apiKey,
-      mode: mode,
-      length: length,
-      promptOverride: _reducePrompt(mode, length, chunks.length),
+        onDelta: onDelta,
+        cancel: cancel,
+      ),
     );
   }
 
-  static Future<String> _condense(
+  // ── map / reduce ──
+
+  static Future<LlmResult> _mapReduce({
+    required LlmProvider provider,
+    required String text,
+    required AiMode mode,
+    required SummaryLength length,
+    required String model,
+    required int budget,
+    String? apiKey,
+    void Function(String stage)? onProgress,
+    TokenSink? onDelta,
+    CancellationToken? cancel,
+  }) async {
+    final chunks = chunk(text, budget);
+    onProgress?.call(
+      '${text.length ~/ 1000}k characters — reading in ${chunks.length} parts…',
+    );
+
+    var done = 0;
+    final notes = await _mapBounded<String, String>(
+      items: chunks,
+      concurrency: provider.maxConcurrency,
+      cancel: cancel,
+      worker: (part, index) async {
+        final result = await _withRetry(
+          provider: provider,
+          onProgress: onProgress,
+          cancel: cancel,
+          // The map stage is not streamed: fragments from parallel workers would
+          // interleave into nonsense on screen.
+          attempt: () => provider.generate(
+            part,
+            model: model,
+            apiKey: apiKey,
+            mode: AiMode.summary,
+            length: SummaryLength.standard,
+            promptOverride: _mapPrompt(index + 1, chunks.length),
+            cancel: cancel,
+          ),
+        );
+        done++;
+        onProgress?.call('Read $done of ${chunks.length} parts…');
+        return result;
+      },
+    );
+
+    var totalIn = 0, totalOut = 0;
+    final combined = <String>[];
+    for (var i = 0; i < notes.length; i++) {
+      totalIn += notes[i].inputTokens;
+      totalOut += notes[i].outputTokens;
+      combined.add('--- Part ${i + 1} of ${notes.length} ---\n${notes[i].text}');
+    }
+
+    cancel?.throwIfCancelled();
+    onProgress?.call('Combining ${chunks.length} parts…');
+
+    var reducible = combined.join('\n\n');
+    // Pathological case: so many parts that the notes themselves overflow.
+    // Condense once more rather than truncating them.
+    if (reducible.length > budget) {
+      final condensed = await _condense(
+          reducible, provider, budget, model, apiKey, onProgress, cancel);
+      totalIn += condensed.inputTokens;
+      totalOut += condensed.outputTokens;
+      reducible = condensed.text;
+    }
+
+    final finalResult = await _withRetry(
+      provider: provider,
+      onProgress: onProgress,
+      cancel: cancel,
+      attempt: () => provider.generate(
+        reducible,
+        model: model,
+        apiKey: apiKey,
+        mode: mode,
+        length: length,
+        promptOverride: _reducePrompt(mode, length, chunks.length),
+        onDelta: onDelta,
+        cancel: cancel,
+      ),
+    );
+
+    return LlmResult(
+      text: finalResult.text,
+      inputTokens: totalIn + finalResult.inputTokens,
+      outputTokens: totalOut + finalResult.outputTokens,
+    );
+  }
+
+  static Future<LlmResult> _condense(
     String notes,
     LlmProvider provider,
     int budget,
-    String? model,
+    String model,
     String? apiKey,
     void Function(String stage)? onProgress,
+    CancellationToken? cancel,
   ) async {
     final parts = chunk(notes, budget);
-    final out = <String>[];
+    final out = StringBuffer();
+    var totalIn = 0, totalOut = 0;
     for (var i = 0; i < parts.length; i++) {
+      cancel?.throwIfCancelled();
       onProgress?.call('Condensing notes ${i + 1}/${parts.length}…');
-      out.add(await provider.summarise(
-        parts[i],
-        model: model,
-        apiKey: apiKey,
-        mode: AiMode.summary,
-        length: SummaryLength.brief,
-        promptOverride:
-            'Condense these notes, losing no distinct fact. Bullet points only.',
-      ));
+      final r = await _withRetry(
+        provider: provider,
+        onProgress: onProgress,
+        cancel: cancel,
+        attempt: () => provider.generate(
+          parts[i],
+          model: model,
+          apiKey: apiKey,
+          length: SummaryLength.brief,
+          promptOverride:
+              'Condense these notes, losing no distinct fact. Bullet points only.',
+          cancel: cancel,
+        ),
+      );
+      totalIn += r.inputTokens;
+      totalOut += r.outputTokens;
+      out.writeln(r.text);
+      out.writeln();
     }
-    return out.join('\n\n');
+    return LlmResult(
+      text: out.toString(),
+      inputTokens: totalIn,
+      outputTokens: totalOut,
+    );
   }
+
+  // ── execution primitives ──
+
+  /// Retry only what is worth retrying.
+  ///
+  /// Exponential backoff with jitter, honouring a provider-supplied delay when
+  /// there is one. A bad API key fails on the first attempt rather than four
+  /// times over twelve seconds.
+  static Future<LlmResult> _withRetry({
+    required LlmProvider provider,
+    required Future<LlmResult> Function() attempt,
+    void Function(String stage)? onProgress,
+    CancellationToken? cancel,
+  }) async {
+    LlmError? last;
+    for (var i = 0; i < _maxAttempts; i++) {
+      cancel?.throwIfCancelled();
+      try {
+        return await attempt();
+      } on Cancelled {
+        rethrow;
+      } on LlmError catch (e) {
+        last = e;
+        if (!e.isRetryable || i == _maxAttempts - 1) rethrow;
+
+        final wait = e.retryAfter ??
+            Duration(
+              milliseconds: (_baseBackoff.inMilliseconds * pow(2, i)).round() +
+                  Random().nextInt(250),
+            );
+        onProgress?.call(
+          '${e.message} Retrying in ${(wait.inMilliseconds / 1000).toStringAsFixed(1)}s '
+          '(${i + 2}/$_maxAttempts)…',
+        );
+        await Future<void>.delayed(wait);
+      }
+    }
+    throw last ?? const ProviderUnavailable('Failed after retries.');
+  }
+
+  /// Run [worker] over [items] with at most [concurrency] in flight, preserving
+  /// input order in the result.
+  ///
+  /// Chunks are independent by construction, so a hosted provider can process
+  /// several at once — on an eight-part chapter that is roughly four times less
+  /// waiting. Local inference stays serial because one model cannot really run
+  /// in parallel anyway.
+  static Future<List<LlmResult>> _mapBounded<T, R>({
+    required List<String> items,
+    required int concurrency,
+    required Future<LlmResult> Function(String item, int index) worker,
+    CancellationToken? cancel,
+  }) async {
+    final results = List<LlmResult?>.filled(items.length, null);
+    var next = 0;
+
+    Future<void> drain() async {
+      while (true) {
+        if (cancel?.isCancelled ?? false) throw const Cancelled();
+        final index = next++;
+        if (index >= items.length) return;
+        results[index] = await worker(items[index], index);
+      }
+    }
+
+    final workers = List.generate(
+      min(concurrency, items.length),
+      (_) => drain(),
+    );
+    await Future.wait(workers);
+    return results.cast<LlmResult>();
+  }
+
+  // ── prompts ──
 
   static String _mapPrompt(int part, int total) =>
       'These are pages $part of $total from a longer passage. Extract the key '
@@ -139,6 +369,8 @@ class Summariser {
       '${length.instruction}\n\n'
       'Merge duplicate points across sections rather than repeating them, and '
       'keep the original order of ideas.';
+
+  // ── chunking ──
 
   /// Split [text] into chunks of at most [budget] characters.
   ///
@@ -162,9 +394,7 @@ class Summariser {
       // that chunks become tiny.
       final floor = start + (budget * 0.5).round();
       var cut = text.lastIndexOf('\n\n', end);
-      if (cut < floor) {
-        cut = _lastSentenceEnd(text, floor, end);
-      }
+      if (cut < floor) cut = _lastSentenceEnd(text, floor, end);
       if (cut < floor) cut = end; // no boundary found; hard cut
 
       chunks.add(text.substring(start, cut).trim());
