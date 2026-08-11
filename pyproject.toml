@@ -5,12 +5,14 @@ description = "Private local audiobook + reader over a personal book library (co
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+audiobook-reader = "audiobook_reader.app:main"
+
 [project.optional-dependencies]
 # Add as each layer is implemented:
-#   reader:  pymupdf, ebooklib
 #   tts:     pyttsx3   (offline)
-#   dev:     pytest, ruff
-dev = ["pytest>=8.0", "ruff>=0.6"]
+reader = ["pymupdf>=1.24"]   # PDF. ebooklib joins this when EPUB is needed.
+dev = ["pytest>=8.0", "ruff>=0.6", "pymupdf>=1.24"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

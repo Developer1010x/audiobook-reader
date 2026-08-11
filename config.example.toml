@@ -12,6 +12,14 @@ extensions = ["pdf", "epub", "mobi", "djvu"]
 engine = "system"
 
 [summary]
-# Local Ollama keeps book text on-device. Never point this at an external API for book content.
+# "ollama" = local, book text stays on this machine (default, and the private option).
+# "gemini" = Google's API — BOOK TEXT LEAVES THIS MACHINE. Opt in knowingly.
 provider = "ollama"
-model = "llama3.2"
+
+# Model for whichever provider is selected above.
+#   ollama: run `ollama list` to see what you have pulled
+#   gemini: gemini-2.5-flash, gemini-2.5-pro, ...
+model = "qwen2.5:1.5b"
+
+# The Gemini API key is NEVER stored here — this file is committed. It is read from the
+# GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable, or from .env, which is git-ignored.
