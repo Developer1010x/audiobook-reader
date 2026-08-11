@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.personal" "\0"
-            VALUE "FileDescription", "audiobook_reader" "\0"
+            VALUE "FileDescription", "Audier" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "audiobook_reader" "\0"
+            VALUE "InternalName", "Audier" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.personal. All rights reserved." "\0"
-            VALUE "OriginalFilename", "audiobook_reader.exe" "\0"
-            VALUE "ProductName", "audiobook_reader" "\0"
+            VALUE "OriginalFilename", "Audier.exe" "\0"
+            VALUE "ProductName", "Audier" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

@@ -40,7 +40,7 @@ class AudiobookReaderApp extends StatelessWidget {
     return ListenableBuilder(
       listenable: theme,
       builder: (context, _) => MaterialApp(
-        title: 'Audiobook Reader',
+        title: 'Audier',
         debugShowCheckedModeBanner: false,
         theme: theme.light,
         darkTheme: theme.dark,

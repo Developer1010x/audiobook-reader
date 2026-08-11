@@ -7,7 +7,7 @@
 <component type="desktop-application">
   <id>io.github.developer1010x.AudiobookReader</id>
 
-  <name>Audiobook Reader</name>
+  <name>Audier</name>
   <summary>Read, listen to and study your own book library — privately</summary>
 
   <metadata_license>CC0-1.0</metadata_license>

@@ -36,7 +36,7 @@ class Wakeful {
     try {
       _inhibitor = await Process.start(inhibit, [
         '--what=idle:sleep',
-        '--who=Audiobook Reader',
+        '--who=Audier',
         '--why=Reading aloud',
         '--mode=block',
         'sleep',

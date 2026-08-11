@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Audiobook Reader
+Name=Audier
 GenericName=Book Reader
 Comment=Read, listen to and study your own book library — privately
 Exec=audiobook-reader %f
