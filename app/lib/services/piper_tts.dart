@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import 'runtime_env.dart';
+
 /// Piper — a neural text-to-speech engine that runs locally on CPU.
 ///
 /// The system voice on Linux (espeak-ng via speech-dispatcher) is a formant
@@ -20,10 +22,13 @@ class PiperTts {
     '/usr/bin/piper',
   ];
 
-  static final _voiceDirCandidates = <String>[
-    p.join(_home, '.local/share/piper-voices'),
-    p.join(_home, '.config/piper/voices'),
-  ];
+  static List<String> get _voiceDirCandidates => <String>[
+        // Voices shipped inside the package take precedence, so a store install
+        // has a working voice with no setup at all.
+        for (final dir in RuntimeEnv.bundledDataDirs) p.join(dir, 'piper-voices'),
+        p.join(_home, '.local/share/piper-voices'),
+        p.join(_home, '.config/piper/voices'),
+      ];
 
   static String get _home => Platform.environment['HOME'] ?? '';
 
@@ -57,7 +62,8 @@ class PiperTts {
         break;
       }
     }
-    _binaryCache ??= _which('piper');
+    // Bundled copy first: a confined build cannot see host binaries.
+    _binaryCache ??= RuntimeEnv.findBinary('piper');
 
     for (final candidate in _voiceDirCandidates) {
       final dir = Directory(candidate);
@@ -103,7 +109,7 @@ class PiperTts {
   /// The system audio player. pw-play covers PipeWire, aplay covers ALSA.
   static String? get player {
     for (final candidate in ['pw-play', 'paplay', 'aplay', 'ffplay']) {
-      final path = _which(candidate);
+      final path = RuntimeEnv.findBinary(candidate);
       if (path != null) return path;
     }
     return null;

@@ -1,6 +1,7 @@
 import 'dart:io' show Platform;
 
 import 'package:audiobook_reader/services/ocr_service.dart';
+import 'package:audiobook_reader/services/runtime_env.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// OCR is a subprocess call, so these cover the decisions made *around* it —
@@ -18,7 +19,7 @@ void main() {
       // would be nonsense.
       final message = OcrService.unavailableMessage;
       if (OcrService.isSupportedPlatform) {
-        expect(message, contains('tesseract-ocr'));
+        expect(message, contains(RuntimeEnv.isSandboxed ? "missing from this" : "tesseract-ocr"));
       } else {
         expect(message, contains('not available on this platform'));
         expect(message, isNot(contains('apt')));

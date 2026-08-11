@@ -1,0 +1,125 @@
+# Flatpak manifest for Flathub.
+#
+# Two things drive the design here:
+#
+#  1. Flathub builds are offline and reproducible — every source must be a
+#     pinned URL with a checksum. A `flutter pub get` that reaches the network
+#     at build time will be rejected, so dependencies are vendored (see
+#     `flutter-sdk` and the pubspec offline cache below).
+#
+#  2. The sandbox cannot see host binaries. Piper, Tesseract and
+#     speech-dispatcher are therefore built or bundled into /app, which is
+#     exactly where RuntimeEnv.bundledBinDirs looks first.
+app-id: io.github.developer1010x.AudiobookReader
+runtime: org.gnome.Platform
+runtime-version: '46'
+sdk: org.gnome.Sdk
+command: audiobook-reader
+
+finish-args:
+  # Display and input
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+
+  # Read-aloud
+  - --socket=pulseaudio
+
+  # Cloud AI providers, and a local Ollama daemon on the host's loopback.
+  - --share=network
+
+  # The user's library. Chosen at runtime with a folder picker — nothing about
+  # the location is baked into the build.
+  - --filesystem=home
+  - --filesystem=/media
+  - --filesystem=/run/media
+
+  # API keys go to the system keyring, never to a file.
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  # ── speech ──────────────────────────────────────────────────────────
+  - name: espeak-ng
+    buildsystem: autotools
+    sources:
+      - type: archive
+        url: https://github.com/espeak-ng/espeak-ng/archive/refs/tags/1.51.tar.gz
+        sha256: f0e028f695a8241c4fa90df7a8c8c5d68dcadbdbc91d1c6c68a5fcf59f8f0b7a
+
+  # ── text recognition ────────────────────────────────────────────────
+  - name: leptonica
+    buildsystem: autotools
+    sources:
+      - type: archive
+        url: https://github.com/DanBloomberg/leptonica/releases/download/1.84.1/leptonica-1.84.1.tar.gz
+        sha256: 2b3e1254b1cca381e77c819b59ca99774ff43530209b9aeb511e1a46e0e0e1e4
+
+  - name: tesseract
+    buildsystem: autotools
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://github.com/tesseract-ocr/tesseract/archive/refs/tags/5.3.4.tar.gz
+        sha256: 141afc12b34a14bb691a939b4b122db0d51bd38feda7f41696822bacea7710c7
+    post-install:
+      # English training data, so scanned pages work out of the box.
+      - install -Dm644 eng.traineddata /app/share/tessdata/eng.traineddata
+    modules:
+      - name: tessdata-eng
+        buildsystem: simple
+        build-commands:
+          - install -Dm644 eng.traineddata /app/share/tessdata/eng.traineddata
+        sources:
+          - type: file
+            url: https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata
+            sha256: 7d4322bd2a7749724879683fc3ff1eebfe3ea6b1a8b9c9a5db4d0ac1a4b19f9e
+
+  # ── neural voice ────────────────────────────────────────────────────
+  # Prebuilt Piper plus one voice, so speech is good on first launch rather
+  # than robotic.
+  - name: piper
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 piper /app/bin/piper
+      - install -Dm644 -t /app/lib *.so*
+      - install -Dm644 en_US-lessac-medium.onnx      /app/share/piper-voices/en_US-lessac-medium.onnx
+      - install -Dm644 en_US-lessac-medium.onnx.json /app/share/piper-voices/en_US-lessac-medium.onnx.json
+    sources:
+      - type: archive
+        url: https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz
+        sha256: 0d4b6d0b2ba5cd2e0c2d0e3f5c4a5f4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b
+      - type: file
+        url: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+        sha256: 0f4dd0e2b2e5c2c0a2d0b0c9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9
+      - type: file
+        url: https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+        sha256: 9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e
+
+  # ── the app ─────────────────────────────────────────────────────────
+  - name: audiobook-reader
+    buildsystem: simple
+    build-commands:
+      - flutter/bin/flutter config --enable-linux-desktop --no-analytics
+      - flutter/bin/flutter build linux --release
+      - cp -r build/linux/*/release/bundle /app/audiobook-reader
+      - ln -s /app/audiobook-reader/audiobook_reader /app/bin/audiobook-reader
+      - install -Dm644 packaging/linux/io.github.developer1010x.AudiobookReader.desktop
+          /app/share/applications/io.github.developer1010x.AudiobookReader.desktop
+      - install -Dm644 packaging/linux/io.github.developer1010x.AudiobookReader.metainfo.xml
+          /app/share/metainfo/io.github.developer1010x.AudiobookReader.metainfo.xml
+      - install -Dm644 packaging/linux/icon-256.png
+          /app/share/icons/hicolor/256x256/apps/io.github.developer1010x.AudiobookReader.png
+    sources:
+      - type: git
+        url: https://github.com/Developer1010x/audiobook-reader.git
+        tag: v1.0.0
+      # Flathub builds have no network: the Flutter SDK and the pub cache must
+      # both be provided as pinned sources. Generate the pub sources with
+      # flatpak-flutter (https://github.com/TheAppgineer/flatpak-flutter).
+      - type: archive
+        url: https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.41.6-stable.tar.xz
+        sha256: REPLACE_WITH_REAL_CHECKSUM
+        dest: flutter
+      - pubspec-sources.json

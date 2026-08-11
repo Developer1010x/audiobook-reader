@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata. Flathub requires this file and validates it; the Snap
+  Store and GNOME Software use it for the listing. The ID must match the
+  .desktop filename exactly, or the app shows up without an icon.
+-->
+<component type="desktop-application">
+  <id>io.github.developer1010x.AudiobookReader</id>
+
+  <name>Audiobook Reader</name>
+  <summary>Read, listen to and study your own book library — privately</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.developer1010x">
+    <name>S Prajwall Narayana</name>
+  </developer>
+
+  <description>
+    <p>
+      A private, local-first reader over your own book library. Open any PDF,
+      EPUB, Markdown or text file; read it on screen, have it read aloud in a
+      neural voice, recognise text on scanned pages, and get AI study aids for
+      textbooks.
+    </p>
+    <p>
+      Your books are read in place — never copied, never uploaded. Speech,
+      text recognition and the local model all run on your own machine. A cloud
+      AI provider is optional, never the default, and always tells you exactly
+      what it is about to send before it sends it.
+    </p>
+    <p>Reading:</p>
+    <ul>
+      <li>PDF, EPUB, Markdown and plain text in one library</li>
+      <li>Document outline, in-book search, zoom and night mode</li>
+      <li>Reopens exactly where you left off</li>
+      <li>Bookmarks, coloured highlights and notes, exportable as Markdown</li>
+    </ul>
+    <p>Listening:</p>
+    <ul>
+      <li>Neural text-to-speech that sounds like a person, not a robot</li>
+      <li>The sentence being spoken is highlighted, and the page follows along</li>
+      <li>Tap any sentence to start reading from exactly there</li>
+      <li>Adjustable speed and a choice of voices</li>
+    </ul>
+    <p>Studying:</p>
+    <ul>
+      <li>Text recognition for scanned pages, so old scans can be read aloud too</li>
+      <li>Summary, learning, interview preparation, flashcards and key terms</li>
+      <li>Four answer lengths, from a single line to a detailed breakdown</li>
+      <li>Six AI providers, local first, with a built-in model installer that
+          recommends a model your computer can actually run</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.developer1010x.AudiobookReader.desktop</launchable>
+
+  <url type="homepage">https://github.com/Developer1010x/audiobook-reader</url>
+  <url type="bugtracker">https://github.com/Developer1010x/audiobook-reader/issues</url>
+  <url type="vcs-browser">https://github.com/Developer1010x/audiobook-reader</url>
+
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+    <category>Education</category>
+  </categories>
+
+  <keywords>
+    <keyword>book</keyword>
+    <keyword>pdf</keyword>
+    <keyword>epub</keyword>
+    <keyword>audiobook</keyword>
+    <keyword>text to speech</keyword>
+    <keyword>ocr</keyword>
+    <keyword>study</keyword>
+  </keywords>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">560</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1"/>
+
+  <!--
+    Screenshots are mandatory on Flathub. Replace these URLs with real hosted
+    images before submitting; a listing without them is rejected.
+  -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Your library, with covers and reading progress</caption>
+      <image>https://raw.githubusercontent.com/Developer1010x/audiobook-reader/main/docs/screenshots/library.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Reading a book aloud, with the spoken sentence highlighted</caption>
+      <image>https://raw.githubusercontent.com/Developer1010x/audiobook-reader/main/docs/screenshots/reader.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="1.0.0" date="2026-08-11">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

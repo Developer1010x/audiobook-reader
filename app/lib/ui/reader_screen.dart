@@ -12,8 +12,10 @@ import '../services/piper_tts.dart';
 import '../services/spoken_text.dart';
 import '../services/settings_service.dart';
 import '../services/stats_service.dart';
+import '../services/media_player_service.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
+import 'music_sheet.dart';
 import 'notes_sheet.dart';
 import 'summary_sheet.dart';
 
@@ -37,6 +39,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final _searchField = TextEditingController();
   final _searchFocus = FocusNode();
   late final TtsService _tts;
+  final _music = MediaPlayerService();
   PdfTextSearcher? _searcher;
 
   int _page = 1;
@@ -433,6 +436,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (mounted) setState(() {});
   }
 
+  /// Background audio — the fallback when speech is unavailable or unwanted.
+  void _openMusic() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => MusicSheet(settings: widget.settings, player: _music),
+    );
+  }
+
   void _openNotes() {
     showModalBottomSheet(
       context: context,
@@ -584,6 +597,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void dispose() {
     _tts.removeListener(_onTts);
     _tts.dispose();
+    _music.dispose();
     _searcher?.dispose();
     _searchField.dispose();
     _searchFocus.dispose();
@@ -684,6 +698,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
           icon: const Icon(Icons.more_vert),
           onSelected: (value) {
             switch (value) {
+              case 'music':
+                _openMusic();
               case 'highlight':
                 _annotateCurrent();
               case 'notes':
@@ -703,6 +719,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
             }
           },
           itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'music',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.library_music_outlined),
+                title: Text('Background audio'),
+              ),
+            ),
             const PopupMenuItem(
               value: 'highlight',
               child: ListTile(

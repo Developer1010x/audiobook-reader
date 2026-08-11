@@ -1,0 +1,116 @@
+name: audiobook-reader
+base: core22
+version: '1.0.0'
+summary: Private reader and audiobook player for your own library
+description: |
+  A private, local-first reader over your own book library. Open any PDF, EPUB,
+  Markdown or text file; read it on screen, have it read aloud in a neural
+  voice, OCR scanned pages, and get AI study aids for textbooks.
+
+  Your books are read in place and never copied or uploaded. Speech, OCR and
+  the local model all run on your machine. A cloud AI provider is optional,
+  never the default, and always states what it is about to send before it
+  sends it.
+
+  Features:
+   * PDF, EPUB, Markdown and plain text
+   * Neural text-to-speech with follow-along highlighting and auto-scroll
+   * Tap any sentence to start reading from there
+   * OCR for scanned pages
+   * Bookmarks, highlights and notes with Markdown export
+   * AI study modes — summary, learning, interview prep, flashcards, key terms
+   * Six AI providers, local-first, with an in-app model installer
+
+grade: stable
+confinement: strict
+compression: lzo
+
+# The bundled Piper voice and Tesseract data make speech and OCR work with no
+# setup at all — a confined snap cannot reach binaries installed on the host.
+architectures:
+  - build-on: amd64
+
+apps:
+  audiobook-reader:
+    command: bin/audiobook_reader
+    extensions: [gnome]
+    environment:
+      # Helper binaries and data ship inside the snap; RuntimeEnv looks here
+      # first precisely because $SNAP paths are the only ones visible.
+      PATH: $SNAP/usr/bin:$SNAP/bin:$PATH
+      TESSDATA_PREFIX: $SNAP/usr/share/tesseract-ocr/4.00/tessdata
+      LD_LIBRARY_PATH: $SNAP/usr/lib/$SNAPCRAFT_ARCH_TRIPLET:$LD_LIBRARY_PATH
+    plugs:
+      - home              # the user's library lives under $HOME
+      - removable-media   # libraries on external drives
+      - network           # cloud providers, and localhost Ollama
+      - audio-playback    # read-aloud
+      - password-manager-service  # API keys in the system keyring
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - opengl
+
+parts:
+  audiobook-reader:
+    plugin: nil
+    source: .
+    override-build: |
+      set -eu
+      flutter config --enable-linux-desktop
+      flutter pub get
+      flutter build linux --release
+      mkdir -p $CRAFT_PART_INSTALL/bin
+      cp -r build/linux/*/release/bundle/* $CRAFT_PART_INSTALL/bin/
+    build-packages:
+      - clang
+      - cmake
+      - ninja-build
+      - pkg-config
+      - libgtk-3-dev
+      - liblzma-dev
+      - libsecret-1-dev
+      - libjsoncpp-dev
+    stage-packages:
+      - libsecret-1-0
+      - libjsoncpp25
+
+  # Speech. Bundled so a fresh install can read aloud immediately.
+  speech:
+    plugin: nil
+    stage-packages:
+      - speech-dispatcher
+      - speech-dispatcher-espeak-ng
+      - libespeak-ng1
+      - espeak-ng-data
+      - alsa-utils
+
+  # OCR for scanned pages, with English language data.
+  ocr:
+    plugin: nil
+    stage-packages:
+      - tesseract-ocr
+      - tesseract-ocr-eng
+
+  # A neural voice, so the default experience is not the robotic one.
+  #
+  # Piper is shipped as a prebuilt binary plus one voice model (~65 MB). More
+  # voices can be added by the user into ~/.local/share/piper-voices, which the
+  # home plug makes reachable.
+  piper:
+    plugin: nil
+    source: https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz
+    source-type: tar
+    override-build: |
+      set -eu
+      mkdir -p $CRAFT_PART_INSTALL/usr/bin
+      cp -a piper $CRAFT_PART_INSTALL/usr/bin/piper || true
+      cp -a *.so* $CRAFT_PART_INSTALL/usr/bin/ 2>/dev/null || true
+      mkdir -p $CRAFT_PART_INSTALL/usr/share/piper-voices
+      cd $CRAFT_PART_INSTALL/usr/share/piper-voices
+      base=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium
+      curl -fsSL -o en_US-lessac-medium.onnx      $base/en_US-lessac-medium.onnx
+      curl -fsSL -o en_US-lessac-medium.onnx.json $base/en_US-lessac-medium.onnx.json
+    build-packages:
+      - curl

@@ -6,6 +6,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:path/path.dart' as p;
 
 import 'piper_tts.dart';
+import 'runtime_env.dart';
 
 /// Read-aloud. Uses the OS voice on every platform, so nothing is sent anywhere —
 /// this is the layer a storybook uses, and it never touches an LLM.
@@ -68,7 +69,7 @@ class TtsService extends ChangeNotifier {
   /// offering a button that does nothing.
   static Future<bool> isAvailable() async {
     if (!_usesLinuxBackend) return true;
-    return PiperTts.isAvailable || _which('spd-say') != null;
+    return PiperTts.isAvailable || RuntimeEnv.findBinary('spd-say') != null;
   }
 
   /// Human-readable reason speech is unavailable, for the UI to show.
@@ -156,7 +157,9 @@ class TtsService extends ChangeNotifier {
     try {
       // -w waits for completion, so awaiting exitCode tells us when the page
       // finished and the reader can advance to the next one.
-      _linuxProcess = await Process.start('spd-say', ['-w', '-r', '$rate', '--', text]);
+      final spd = RuntimeEnv.findBinary('spd-say');
+      if (spd == null) throw Exception(unavailableMessage);
+      _linuxProcess = await Process.start(spd, ['-w', '-r', '$rate', '--', text]);
     } catch (e) {
       _reset();
       throw Exception(unavailableMessage);
@@ -308,7 +311,8 @@ class TtsService extends ChangeNotifier {
       _linuxProcess = null; // clear first, so the exit handler stays quiet
       process?.kill();
       try {
-        await Process.run('spd-say', ['-C']); // cancel anything already queued
+        final spd = RuntimeEnv.findBinary('spd-say');
+        if (spd != null) await Process.run(spd, ['-C']); // cancel queued speech
       } catch (_) {}
       _reset();
       return;

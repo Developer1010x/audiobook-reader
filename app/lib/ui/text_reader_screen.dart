@@ -8,8 +8,10 @@ import '../services/classifier.dart';
 import '../services/settings_service.dart';
 import '../services/stats_service.dart';
 import '../services/text_document.dart';
+import '../services/media_player_service.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
+import 'music_sheet.dart';
 import 'notes_sheet.dart';
 import 'summary_sheet.dart';
 
@@ -36,6 +38,7 @@ class TextReaderScreen extends StatefulWidget {
 
 class _TextReaderScreenState extends State<TextReaderScreen> {
   late final TtsService _tts;
+  final _music = MediaPlayerService();
   final _scroll = ScrollController();
 
   TextDocument? _doc;
@@ -261,6 +264,16 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
     if (mounted) setState(() {});
   }
 
+  /// Background audio — the fallback when speech is unavailable or unwanted.
+  void _openMusic() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => MusicSheet(settings: widget.settings, player: _music),
+    );
+  }
+
   void _openNotes() {
     showModalBottomSheet(
       context: context,
@@ -296,6 +309,7 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
   void dispose() {
     _tts.removeListener(_onTts);
     _tts.dispose();
+    _music.dispose();
     _scroll.dispose();
     for (final sentence in _sentences) {
       sentence.recognizer.dispose();
@@ -338,6 +352,11 @@ class _TextReaderScreenState extends State<TextReaderScreen> {
             icon: Icon(bookmarked ? Icons.bookmark : Icons.bookmark_border),
             tooltip: bookmarked ? 'Remove bookmark' : 'Bookmark this page',
             onPressed: _toggleBookmark,
+          ),
+          IconButton(
+            icon: const Icon(Icons.library_music_outlined),
+            tooltip: 'Background audio',
+            onPressed: _openMusic,
           ),
           IconButton(
             icon: const Icon(Icons.bookmarks_outlined),

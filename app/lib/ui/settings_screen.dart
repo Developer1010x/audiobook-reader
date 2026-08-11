@@ -1,7 +1,14 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../services/llm/llm_provider.dart';
+import '../services/cover_service.dart';
+import '../services/llm/ollama_manager.dart';
+import '../services/llm/summary_cache.dart';
+import '../services/ocr_service.dart';
 import '../services/settings_service.dart';
+import '../services/system_info.dart';
+import 'model_manager_sheet.dart';
 
 class SettingsScreen extends StatefulWidget {
   final SettingsService settings;
@@ -171,6 +178,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() {});
   }
 
+  /// The library location is always the user's choice — nothing about it is
+  /// baked into the build.
+  Future<void> _changeLibraryFolder() async {
+    final path = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: 'Choose your book library folder',
+      initialDirectory: widget.settings.libraryPath,
+    );
+    if (path == null) return;
+    await widget.settings.setLibraryPath(path);
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Library folder set to $path')),
+    );
+  }
+
+  Future<void> _clearCaches() async {
+    await CoverService.clear();
+    await OcrService.clear();
+    await SummaryCache.clear();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Caches cleared')),
+    );
+  }
+
+  void _openModelManager() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => ModelManagerSheet(settings: widget.settings),
+    ).then((_) => mounted ? setState(() {}) : null);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -189,7 +231,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
             child: Text(
               'Only used for textbooks, and only when you tap Summarise. '
-              'Storybooks never contact a model.',
+              'Storybooks never contact a model. '
+              'This machine has ${SystemInfo.ramLabel}.',
               style: theme.textTheme.bodySmall
                   ?.copyWith(color: theme.colorScheme.outline),
             ),
@@ -203,7 +246,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             leading: const Icon(Icons.folder_outlined),
             title: const Text('Library folder'),
-            subtitle: Text(widget.settings.libraryPath ?? 'Not set'),
+            subtitle: Text(
+              widget.settings.libraryPath ?? 'Not set — tap to choose',
+              style: const TextStyle(fontSize: 12),
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _changeLibraryFolder,
+          ),
+          ListTile(
+            leading: const Icon(Icons.cleaning_services_outlined),
+            title: const Text('Clear caches'),
+            subtitle: const Text(
+              'Covers, recognised text and saved summaries. '
+              'Bookmarks, notes and progress are kept.',
+              style: TextStyle(fontSize: 12),
+            ),
+            onTap: _clearCaches,
           ),
         ],
       ),
@@ -264,8 +322,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   OutlinedButton(
                     style: _tiny,
-                    onPressed: () => _editModel(p),
-                    child: const Text('Model'),
+                    onPressed: p is OllamaProvider
+                        ? _openModelManager
+                        : () => _editModel(p),
+                    child: Text(p is OllamaProvider ? 'Manage models' : 'Model'),
                   ),
                 ],
               ),

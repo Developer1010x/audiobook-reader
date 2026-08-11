@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 
 import '../models/book.dart';
+import 'runtime_env.dart';
 
 /// Optical character recognition for scanned pages.
 ///
@@ -47,18 +48,25 @@ class OcrService {
   static Future<bool> isAvailable() async {
     if (!isSupportedPlatform) return false;
     if (_available != null) return _available!;
+    final binary = RuntimeEnv.findBinary('tesseract');
+    if (binary == null) return _available = false;
     try {
-      final result = await Process.run('tesseract', ['--version']);
+      final result = await Process.run(binary, ['--version']);
       return _available = result.exitCode == 0;
     } catch (_) {
       return _available = false;
     }
   }
 
-  static String get unavailableMessage => isSupportedPlatform
-      ? 'This page is a scan and needs OCR. Install it with:\n'
-          '    sudo apt install tesseract-ocr'
-      : 'This page is a scan. OCR is not available on this platform yet.';
+  static String get unavailableMessage {
+    if (!isSupportedPlatform) {
+      return 'This page is a scan. OCR is not available on this platform yet.';
+    }
+    final packaged = RuntimeEnv.installHint('Tesseract OCR');
+    if (packaged.isNotEmpty) return packaged;
+    return 'This page is a scan and needs OCR. Install it with:\n'
+        '    sudo apt install tesseract-ocr';
+  }
 
   static String _key(Book book, int page) =>
       '${sha256.convert(book.path.codeUnits).toString().substring(0, 16)}_p$page';
@@ -116,7 +124,8 @@ class OcrService {
     onProgress?.call('Reading text from page $page…');
     // Tesseract appends .txt to the output base itself.
     final outBase = p.join(dir.path, _key(book, page));
-    final result = await Process.run('tesseract', [imageFile.path, outBase]);
+    final tesseract = RuntimeEnv.findBinary('tesseract')!;
+    final result = await Process.run(tesseract, [imageFile.path, outBase]);
 
     // The rendered PNG is large and only needed as OCR input; the text is what
     // gets cached.

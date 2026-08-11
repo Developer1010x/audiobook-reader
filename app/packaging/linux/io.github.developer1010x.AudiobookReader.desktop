@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Audiobook Reader
+GenericName=Book Reader
+Comment=Read, listen to and study your own book library — privately
+Exec=audiobook-reader %f
+Icon=io.github.developer1010x.AudiobookReader
+Terminal=false
+Categories=Office;Viewer;
+Keywords=book;pdf;epub;reader;audiobook;tts;speech;ocr;study;
+MimeType=application/pdf;application/epub+zip;text/plain;text/markdown;
+StartupNotify=true
+StartupWMClass=audiobook_reader

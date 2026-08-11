@@ -159,6 +159,11 @@ class SettingsService {
     await _prefs.setStringList('recent_books', list.take(12).toList());
   }
 
+  // ── background audio ──
+  String? get musicFolder => _prefs.getString('music_folder');
+  Future<void> setMusicFolder(String path) =>
+      _prefs.setString('music_folder', path);
+
   // ── voice ──
   /// Chosen Piper voice, remembered across sessions.
   String? get voice => _prefs.getString('tts_voice');
