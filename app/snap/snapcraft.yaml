@@ -1,4 +1,8 @@
 name: audiobook-reader
+# The store listing shows `title`, not `name`. Without it the snap would appear
+# as "audiobook-reader" while the .desktop file and AppStream metadata both say
+# Audier.
+title: Audier
 base: core22
 version: '1.0.0'
 summary: Private reader and audiobook player for your own library
