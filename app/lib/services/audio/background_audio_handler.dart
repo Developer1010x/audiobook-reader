@@ -283,6 +283,32 @@ class BackgroundAudioHandler extends BaseAudioHandler
 
   Timer? _ticker;
 
+  bool _disposed = false;
+
+  /// Serialises everything that mutates the playlist or the run bookkeeping.
+  ///
+  /// **The run is two ints and a live platform playlist, and they are updated on
+  /// opposite sides of an `await`.** `_drain` reads `_runStart + _appended`,
+  /// awaits `addAudioSource`, and only then increments — so two `supply()` calls
+  /// landing together, which is the ordinary case at a look-ahead of two, both
+  /// read the same index, append the *same* file twice and leave the run
+  /// pointing past a sentence that is then never queued. One sentence heard
+  /// twice, the next never heard, and every [_positionOf] after it off by one,
+  /// so a skip lands on the wrong sentence. The same race exists between a
+  /// `supply()` in flight and a lock-screen skip rebuilding the run underneath
+  /// it, and between either and an `open()` replacing the queue.
+  ///
+  /// Every path that touches `_runStart`, `_appended` or the platform playlist
+  /// goes through here; the `…Locked` methods are the bodies, and may only call
+  /// each other.
+  Future<void> _gate = Future<void>.value();
+
+  Future<void> _serialised(Future<void> Function() action) {
+    final result = _gate.then((_) => action());
+    _gate = result.then((_) {}, onError: (Object _) {});
+    return result;
+  }
+
   /// A boundary stop took effect — the sleep timer's gentle ending landed.
   ///
   /// **Not part of the [SpeechQueuePlayer] contract**, which has no way to say
@@ -319,21 +345,28 @@ class BackgroundAudioHandler extends BaseAudioHandler
   Stream<RenderedSpeech> get released => _released.stream;
 
   @override
-  Future<void> open(SpeechQueue queue) async {
-    final player = _player;
-    if (player == null) return;
+  Future<void> open(SpeechQueue queue) {
+    if (_player == null) return Future<void>.value();
     assert(
       queue.isOrdered,
       'a queue out of reading order reads the book out of order',
     );
+    return _serialised(() => _openLocked(queue));
+  }
 
-    // Everything the previous queue held is audio nobody will hear again: the
-    // playlist is about to be replaced and the slots with it. Released before
-    // the fields are reset, or the paths are lost and the files stay in /tmp.
-    _releaseAll();
+  Future<void> _openLocked(SpeechQueue queue) async {
+    final player = _player;
+    if (player == null) return;
 
     await player.stop();
     await player.clearAudioSources();
+
+    // Everything the previous queue held is audio nobody will hear again: the
+    // playlist has been replaced and the slots are about to be. Released *after*
+    // the awaits above, not before: a supply() that landed while the player was
+    // stopping went into the old slots list, and releasing any earlier would
+    // strand exactly that file in the temp directory.
+    _releaseAll();
 
     _queue = queue;
     _slots = List<RenderedSpeech?>.filled(queue.length, null);
@@ -352,9 +385,23 @@ class BackgroundAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> supply(RenderedSpeech rendered) async {
+  Future<void> supply(RenderedSpeech rendered) {
+    if (_player == null || _queue == null) {
+      _release(rendered);
+      return Future<void>.value();
+    }
+    // Gated with the drain it triggers, so the decision below — is this unit
+    // already in the playlist, whose slots does `index` even address — is taken
+    // against a run that cannot change underneath it. Ungated, a re-render
+    // arriving while the older one was mid-`addAudioSource` would see
+    // `_positionOf` still null, release the file the playlist had just opened,
+    // and lose the sentence to a load error.
+    return _serialised(() => _supplyLocked(rendered));
+  }
+
+  Future<void> _supplyLocked(RenderedSpeech rendered) async {
     final queue = _queue;
-    if (_player == null || queue == null) {
+    if (queue == null) {
       _release(rendered);
       return;
     }
@@ -389,7 +436,7 @@ class BackgroundAudioHandler extends BaseAudioHandler
       _release(held);
     }
     _slots[index] = rendered;
-    await _drain();
+    await _drainLocked();
   }
 
   /// Append every unit that is ready, in order, and stop at the first gap.
@@ -397,7 +444,10 @@ class BackgroundAudioHandler extends BaseAudioHandler
   /// The gap is the point: a unit whose audio has not landed blocks everything
   /// behind it, which is what keeps playback in reading order no matter what
   /// order the renders complete in.
-  Future<void> _drain() async {
+  ///
+  /// Only ever called through [_serialised] — see the note there for what two of
+  /// these running at once does to the run.
+  Future<void> _drainLocked() async {
     final player = _player;
     final queue = _queue;
     if (player == null || queue == null || _stopAfterCurrent) return;
@@ -434,6 +484,17 @@ class BackgroundAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> play() async {
+    final queue = _queue;
+    // A page with nothing speakable on it. Nothing will ever be appended, so
+    // nothing will ever complete, so onQueueFinished would never fire and the
+    // reader would sit on a blank page waiting for a voice that cannot start.
+    // Report the end of the queue instead, which is the reader's cue to turn.
+    if (queue != null && queue.isEmpty) {
+      _wantPlaying = false;
+      _finished = true;
+      _emit();
+      return;
+    }
     final wasStopped = !_wantPlaying;
     _wantPlaying = true;
     _finished = false;
@@ -441,7 +502,7 @@ class BackgroundAudioHandler extends BaseAudioHandler
     // Emitted only on the transition, so a pipeline that reacts to the command
     // by calling play() again cannot bounce it back and forth for ever.
     if (wasStopped) _notify(MediaCommand.play);
-    await _ensurePlaying();
+    await _serialised(_ensurePlaying);
     _emit();
   }
 
@@ -468,7 +529,9 @@ class BackgroundAudioHandler extends BaseAudioHandler
     if (wasLive) _notify(MediaCommand.stop);
   }
 
-  Future<void> _stopInternal() async {
+  Future<void> _stopInternal() => _serialised(_stopLocked);
+
+  Future<void> _stopLocked() async {
     _wantPlaying = false;
     _stopAfterCurrent = false;
     _finished = false;
@@ -527,7 +590,9 @@ class BackgroundAudioHandler extends BaseAudioHandler
   }
 
   /// Put the playhead on [index], rebuilding the playlist run if it has to.
-  Future<void> _moveTo(int index) async {
+  Future<void> _moveTo(int index) => _serialised(() => _moveToLocked(index));
+
+  Future<void> _moveToLocked(int index) async {
     final player = _player;
     final queue = _queue;
     if (player == null || queue == null) return;
@@ -550,7 +615,7 @@ class BackgroundAudioHandler extends BaseAudioHandler
       await player.clearAudioSources();
       _runStart = index;
       _appended = 0;
-      await _drain();
+      await _drainLocked();
     }
     _emit();
     await _ensurePlaying();
@@ -564,6 +629,10 @@ class BackgroundAudioHandler extends BaseAudioHandler
   }
 
   /// Start, or resume, at the playhead — the one place playback is set going.
+  ///
+  /// Only ever called through [_serialised], because it seeks by playlist
+  /// position and that number is only meaningful while nothing else is mutating
+  /// the run.
   ///
   /// Called after every append and every move, and does nothing unless the app
   /// actually wants sound. When the playhead's audio has not arrived it returns
@@ -603,35 +672,43 @@ class BackgroundAudioHandler extends BaseAudioHandler
 
   @override
   void stopAfterCurrentUnit() {
-    final player = _player;
-    final queue = _queue;
-    if (player == null || queue == null) {
+    if (_player == null || _queue == null) {
       unawaited(stop());
       return;
     }
+    if (_stopAfterCurrent) return;
+    // Set before the gate, not inside it: the flag is what closes _drainLocked
+    // and supply() for business, and a render landing in the meantime must not
+    // be able to extend the playlist past the boundary we are about to cut.
+    _stopAfterCurrent = true;
+    _handledCompletion = false;
+    unawaited(_serialised(_boundaryStopLocked));
+    _emit();
+  }
+
+  Future<void> _boundaryStopLocked() async {
+    final player = _player;
+    if (player == null || _queue == null) return;
     final position = _positionOf(_playhead);
     if (position == null) {
       // Nothing is audible to finish — mid-render, or already stopped. An
       // honest immediate ending beats a promise that never lands.
-      unawaited(_stopInternal().then((_) => onBoundaryStop?.call()));
+      await _stopLocked();
+      onBoundaryStop?.call();
       return;
     }
-
-    _stopAfterCurrent = true;
-    _handledCompletion = false;
     // Truncating is what makes the boundary exact. Watching for the sentence to
     // end and stopping then means the next one has already begun — a syllable
     // of the following sentence is precisely what wakes someone up. With
     // nothing behind it in the playlist, the player reaches `completed` at the
     // end of this sentence and stops there on its own.
-    final drop = _appended - (position + 1);
-    if (drop > 0) {
-      unawaited(player.removeAudioSourceRange(position + 1, _appended));
+    if (_appended > position + 1) {
+      await player.removeAudioSourceRange(position + 1, _appended);
       _appended = position + 1;
     }
     // Everything ahead of the playhead — queued or merely rendered — is audio
-    // this session will not reach. _drain is closed for business while the flag
-    // is set, so nothing refills behind us.
+    // this session will not reach. Released only now that the sources holding
+    // those files have actually left the playlist.
     for (var i = _playhead + 1; i < _slots.length; i++) {
       final rendered = _slots[i];
       if (rendered == null) continue;
@@ -656,8 +733,17 @@ class BackgroundAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> setSpeed(double speed) async {
-    await _player?.setSpeed(speed);
-    onSpeedRequested?.call(speed);
+    final player = _player;
+    if (player == null) return;
+    // Fired only on an actual change. This method is the remote control's entry
+    // point *and* the app's — `AudioHandler.setSpeed` and
+    // `SpeechQueuePlayer.setSpeed` are the same method here — so echoing every
+    // call back would let an app that reacts by storing the rate and
+    // re-applying it bounce for ever. The transport commands are guarded the
+    // same way, on the transition rather than the call.
+    final changed = (player.speed - speed).abs() > 0.001;
+    await player.setSpeed(speed);
+    if (changed) onSpeedRequested?.call(speed);
     _emit();
   }
 
@@ -791,7 +877,36 @@ class BackgroundAudioHandler extends BaseAudioHandler
     final player = _player;
     if (player == null) return;
 
-    final playing = _last.isPlaying;
+    // The *intent*, not the momentary audibility — and this is the difference
+    // between a book that reads itself to sleep and one that stops mid-page.
+    // audio_service's `AudioService.handlePlaybackStateUpdate` calls
+    // `exitPlayingState()` on any true→false edge here, and that does
+    // `stopForeground()` **and `releaseWakeLock()`**. A gap while the next
+    // sentence is still rendering is not a pause: publishing it as one drops
+    // the partial wake lock with the screen off, so the CPU sleeps, the render
+    // that would have ended the gap never finishes, and the following
+    // `enterPlayingState()` has to call `startForegroundService()` from the
+    // background — restricted since Android 12. just_audio's own `playing` flag
+    // stays true through buffering for exactly this reason.
+    final playing = _wantPlaying && !_finished;
+
+    // `idle` does not mean "nothing audible", it means "no session": audio_service
+    // calls its own `stop()` — tearing down the service, the media session and
+    // the notification — on any transition into it. A queue that is open but
+    // starved, or paused before its first render landed, must not look like
+    // that, or a page turn flickers the notification away and back and a pause
+    // during a gap kills the session outright.
+    final AudioProcessingState processing;
+    if (_queue == null) {
+      processing = AudioProcessingState.idle;
+    } else if (_finished) {
+      processing = AudioProcessingState.completed;
+    } else if (_positionOf(_playhead) == null) {
+      processing = AudioProcessingState.loading;
+    } else {
+      processing = AudioProcessingState.ready;
+    }
+
     playbackState.add(
       PlaybackState(
         controls: [
@@ -810,12 +925,7 @@ class BackgroundAudioHandler extends BaseAudioHandler
           MediaAction.seekBackward,
           MediaAction.setSpeed,
         },
-        processingState: switch (_last.state) {
-          SpeechPlaybackState.idle => AudioProcessingState.idle,
-          SpeechPlaybackState.preparing => AudioProcessingState.loading,
-          SpeechPlaybackState.completed => AudioProcessingState.completed,
-          _ => AudioProcessingState.ready,
-        },
+        processingState: processing,
         playing: playing,
         // The platform extrapolates from this pair and the speed, so the scrubber
         // moves smoothly between our updates rather than once a second.
@@ -964,7 +1074,7 @@ class BackgroundAudioHandler extends BaseAudioHandler
       _playhead = next;
       _atPlayhead = false;
       _emit();
-      unawaited(_ensurePlaying());
+      unawaited(_serialised(_ensurePlaying));
       return;
     }
     _finished = true;
@@ -1018,6 +1128,13 @@ class BackgroundAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> dispose() async {
+    // One object fills two contract slots, so a pipeline tearing itself down
+    // calls `player.dispose()` and `session.dispose()` and both land here. The
+    // second pass would clear the playlist of a disposed player and re-close
+    // controllers for nothing.
+    if (_disposed) return;
+    _disposed = true;
+
     // Stopped first, and through the ordinary path: it publishes an idle
     // playback state, which is what takes the notification down. A media
     // notification still sitting there after the book was closed is the sort of
@@ -1032,15 +1149,25 @@ class BackgroundAudioHandler extends BaseAudioHandler
     await _status.close();
     await _commands.close();
 
-    // Nothing ever claimed the released files, so nothing else is going to
-    // delete them.
-    if (!_released.hasListener) {
+    if (_released.hasListener) {
+      // Draining the buffered events is what the close future waits for, so it
+      // is safe — and worth — awaiting: the listener gets every file before the
+      // handler is gone.
+      await _released.close();
+    } else {
+      // Nothing ever claimed the released files, so nothing else is going to
+      // delete them.
       for (final rendered in _pendingRelease) {
         _delete(rendered);
       }
+      _pendingRelease.clear();
+      // Deliberately not awaited. `close()` on a single-subscription controller
+      // that was never listened to returns a future that only completes once a
+      // listener has drained the buffered events and taken the done event — and
+      // there is no listener and never will be, so awaiting it hangs dispose()
+      // for the rest of the process's life.
+      unawaited(_released.close());
     }
-    _pendingRelease.clear();
-    await _released.close();
   }
 }
 
