@@ -28,6 +28,16 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          # Pinned, not floating. `channel: stable` silently moved CI from
+          # Flutter 3.41 to 3.47 with no commit of ours, and 3.47's Dart refuses
+          # to compile pdfrx_engine 0.4.5 (a transitive pin of pdfrx 2.4.7):
+          #   pdf_file_cache.dart:380 — 'blockSize' on a potentially null
+          #   'PdfFileCache?'.
+          # The fix in pdfrx_engine 0.4.6 needs meta ^1.18.0, which this
+          # Flutter's flutter_test does not allow, so the toolchain and the
+          # dependency can only be moved together. Pin until pdfrx releases a
+          # version that resolves to 0.4.6.
+          flutter-version: 3.41.6
           channel: stable
           cache: true
 
