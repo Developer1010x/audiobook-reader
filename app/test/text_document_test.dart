@@ -51,7 +51,7 @@ File writeEpub(Directory dir, {required List<(String title, String body)> chapte
 </package>''');
 
   final file = File('${dir.path}/test.epub')
-    ..writeAsBytesSync(ZipEncoder().encode(archive)!);
+    ..writeAsBytesSync(ZipEncoder().encode(archive));
   return file;
 }
 

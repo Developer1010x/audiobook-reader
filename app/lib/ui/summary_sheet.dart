@@ -13,6 +13,19 @@ import '../services/settings_service.dart';
 import '../services/tts_service.dart';
 import 'widgets/markdown_text.dart';
 
+/// AiMode stores a raw Material codepoint so the service layer never has to
+/// import Flutter. Building an IconData from a variable at the use site defeats
+/// icon tree-shaking — the analyser flags it as non-const — so the mapping back
+/// to the real constants lives here, in the layer that already depends on
+/// Material.
+const _modeIcons = <AiMode, IconData>{
+  AiMode.summary: Icons.notes,
+  AiMode.learning: Icons.school,
+  AiMode.interview: Icons.person,
+  AiMode.flashcards: Icons.style,
+  AiMode.keyTerms: Icons.list_alt,
+};
+
 /// The only place in the app that contacts an LLM. Reached solely from a
 /// textbook, and only when the user asks for it.
 class SummarySheet extends StatefulWidget {
@@ -208,10 +221,7 @@ class _SummarySheetState extends State<SummarySheet> {
             children: [
               for (final mode in AiMode.values)
                 ChoiceChip(
-                  avatar: Icon(
-                    IconData(mode.icon, fontFamily: 'MaterialIcons'),
-                    size: 16,
-                  ),
+                  avatar: Icon(_modeIcons[mode] ?? Icons.notes, size: 16),
                   label: Text(mode.label),
                   selected: _mode == mode,
                   onSelected: (_) {

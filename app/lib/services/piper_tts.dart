@@ -74,16 +74,6 @@ class PiperTts {
     }
   }
 
-  static String? _which(String binary) {
-    try {
-      final result = Process.runSync('which', [binary]);
-      if (result.exitCode != 0) return null;
-      final path = (result.stdout as String).trim();
-      return path.isEmpty ? null : path;
-    } catch (_) {
-      return null;
-    }
-  }
 
   static List<String> _voicesIn(Directory dir) => dir
       .listSync()
