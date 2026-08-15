@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 
 import '../services/llm/llm_provider.dart';
 import '../services/cover_service.dart';
-import '../services/llm/ollama_manager.dart';
 import '../services/llm/summary_cache.dart';
 import '../services/ocr_service.dart';
 import '../services/settings_service.dart';

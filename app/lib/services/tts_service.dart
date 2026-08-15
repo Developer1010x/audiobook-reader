@@ -166,16 +166,6 @@ class TtsService extends ChangeNotifier {
     notifyListeners();
   }
 
-  static String? _which(String binary) {
-    try {
-      final result = Process.runSync('which', [binary]);
-      if (result.exitCode != 0) return null;
-      final path = (result.stdout as String).trim();
-      return path.isEmpty ? null : path;
-    } catch (_) {
-      return null;
-    }
-  }
 
   /// Called with the index of the segment now being spoken, so the UI can
   /// highlight it. Null when speech stops.
@@ -262,6 +252,9 @@ class TtsService extends ChangeNotifier {
     final session = ++_session;
     _preparing = true;
     _speaking = true;
+    // A boundary stop that armed but never fired — the sleep timer expired
+    // while nothing was speaking — must not silently kill the next page.
+    _stopAtBoundary = false;
     notifyListeners();
 
     final voice = _voice ?? PiperTts.voices.first;
@@ -304,6 +297,7 @@ class TtsService extends ChangeNotifier {
       rendering.putIfAbsent(index, () => synth(index));
     }
 
+    var stoppedAtBoundary = false;
     try {
       for (var i = 0; i <= _lookAhead; i++) {
         schedule(i);
@@ -329,6 +323,16 @@ class TtsService extends ChangeNotifier {
         onSegment?.call(i); // drives the on-page highlight
         await _play(audio, session);
         if (session != _session) return;
+
+        // stopAfterCurrentSegment() armed this while the sentence above was in
+        // flight. Between sentences is the only place it can be honoured, and
+        // honouring it here is the whole feature: the sleep timer's ending
+        // lands after a complete clause instead of cutting someone off.
+        if (_stopAtBoundary) {
+          _stopAtBoundary = false;
+          stoppedAtBoundary = true;
+          break;
+        }
       }
     } finally {
       // Everything left in the window sits ahead of the playhead and will never
@@ -342,7 +346,14 @@ class TtsService extends ChangeNotifier {
         _preparing = false;
         onSegment?.call(null);
         notifyListeners();
-        onPageFinished?.call();
+        // A boundary stop is not the page ending — it is the reader being asked
+        // to stop early. Firing onPageFinished here would auto-advance to the
+        // next page, which is exactly what a sleep timer must not do.
+        if (stoppedAtBoundary) {
+          onBoundaryStop?.call();
+        } else {
+          onPageFinished?.call();
+        }
       }
     }
   }
