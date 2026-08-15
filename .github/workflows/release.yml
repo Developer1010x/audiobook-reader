@@ -115,9 +115,15 @@ jobs:
           EOF
           chmod +x $APP/AppRun
 
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool-x86_64.AppImage
-          ./appimagetool-x86_64.AppImage --appimage-extract-and-run $APP \
+          # Fetch the build tool into its own directory. It is itself an
+          # .AppImage, so leaving it in the workspace root makes the release
+          # step's *.AppImage glob match it and publish appimagetool alongside
+          # the app — which is what happened in v1.0.0.
+          mkdir -p .appimagetool
+          wget -q -O .appimagetool/appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x .appimagetool/appimagetool
+          ./.appimagetool/appimagetool --appimage-extract-and-run $APP \
             "audiobook-reader-${{ steps.version.outputs.version }}-x86_64.AppImage"
 
       # ── deb ──
@@ -158,9 +164,9 @@ jobs:
           name: Audiobook Reader ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           files: |
-            *.AppImage
-            *.tar.gz
-            *.deb
+            audiobook-reader-*.AppImage
+            audiobook-reader-*.tar.gz
+            audiobook-reader_*.deb
           body: |
             ## Install
 
