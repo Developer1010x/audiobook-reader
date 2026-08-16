@@ -395,6 +395,6 @@ EPUB in memory, and provider tests assert that requests *don't* happen.
 
 ## Licence
 
-Private project. No book content is included in this repository, and
+MIT licensed (see LICENSE). No book content is included in this repository, and
 `.gitignore` blocks every common book and audio format so it cannot be added
 accidentally.

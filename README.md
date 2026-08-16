@@ -233,4 +233,4 @@ differ. Temperature is 0.3 throughout — summarising should be faithful, not cr
 
 ## Licence
 
-Private project. No book content is included in this repository.
+MIT licensed (see LICENSE). No book content is included in this repository.
