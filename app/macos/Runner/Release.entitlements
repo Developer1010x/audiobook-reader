@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  App Sandbox is deliberately OFF.
+
+  This is not a shortcut. The sandbox forbids three things the app is built
+  around, and each one is a core feature rather than a nicety:
+
+    1. Spawning helper binaries. Piper, Tesseract and caffeinate are separate
+       executables outside the bundle; a sandboxed process cannot exec them.
+       Piper is the whole reason speech sounds like a person rather than a
+       robot, and Tesseract is the only way a scanned book can be read at all.
+    2. Scanning a library folder. The scanner walks a directory tree the user
+       nominates once; the sandbox would restrict it to individually-picked
+       files unless the whole scanner were rewritten around security-scoped
+       bookmarks.
+    3. Reaching Ollama on localhost, which is how AI features stay local and
+       private rather than going to a cloud provider.
+
+  The cost of this choice is that the app cannot ship on the Mac App Store. It
+  ships as a notarized DMG from GitHub Releases instead, exactly as the Linux
+  build ships as an AppImage — which is the distribution this project already
+  targets.
+
+  If Mac App Store distribution is ever wanted, re-enable app-sandbox here and
+  budget for: bundling and co-signing Piper and Tesseract inside the bundle
+  with the inherit entitlement, and rewriting the library scanner around
+  security-scoped bookmarks. That is a project, not a flag.
+-->
+<plist version="1.0">
+<dict>
+	<!-- Outbound HTTP: Ollama on localhost, cover art and dictionary lookups. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

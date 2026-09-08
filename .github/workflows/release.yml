@@ -1,11 +1,17 @@
-# Builds a downloadable Linux app on every tag and attaches it to a GitHub
-# Release, so anyone can install without a store.
+# Builds downloadable apps on every tag and attaches them to a GitHub Release,
+# so anyone can install without a store.
 #
-# Three artefacts, because "install it" means different things to different
-# people:
+# Linux gets three artefacts, because "install it" means different things to
+# different people:
 #   - AppImage  — one file, chmod +x, run. No root, no package manager.
 #   - .tar.gz   — the raw bundle for anyone who prefers to unpack it themselves.
 #   - .deb      — for Debian/Ubuntu users who want it in their menu properly.
+# macOS gets a .dmg, Windows a .zip.
+#
+# Each platform builds and uploads an artefact; a single `publish` job collects
+# them and creates the release. That split is not cosmetic — three jobs each
+# calling action-gh-release on the same tag race each other, and the loser's
+# assets go missing from a release that still looks successful.
 name: Release
 
 on:
@@ -20,8 +26,24 @@ on:
 permissions:
   contents: write
 
+# Resolved once and shared, so the three builds cannot disagree about what
+# version they are producing.
 jobs:
+  version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve version
+        id: resolve
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+
   linux:
+    needs: version
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -53,13 +75,6 @@ jobs:
             libsecret-1-dev libjsoncpp-dev \
             lld file desktop-file-utils
 
-      - name: Resolve version
-        id: version
-        run: |
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
-          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Build
         working-directory: app
         run: |
@@ -76,7 +91,7 @@ jobs:
         working-directory: app/build/linux/x64/release
         run: |
           mv bundle audiobook-reader
-          tar czf "$GITHUB_WORKSPACE/audiobook-reader-${{ steps.version.outputs.version }}-linux-x64.tar.gz" audiobook-reader
+          tar czf "$GITHUB_WORKSPACE/audiobook-reader-${{ needs.version.outputs.version }}-linux-x64.tar.gz" audiobook-reader
 
       # ── AppImage ──
       #
@@ -124,7 +139,7 @@ jobs:
             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x .appimagetool/appimagetool
           ./.appimagetool/appimagetool --appimage-extract-and-run $APP \
-            "audiobook-reader-${{ steps.version.outputs.version }}-x86_64.AppImage"
+            "audiobook-reader-${{ needs.version.outputs.version }}-x86_64.AppImage"
 
       # ── deb ──
       - name: Build .deb
@@ -141,7 +156,7 @@ jobs:
 
           cat > $PKG/DEBIAN/control <<EOF
           Package: audiobook-reader
-          Version: ${{ steps.version.outputs.version }}
+          Version: ${{ needs.version.outputs.version }}
           Section: utils
           Priority: optional
           Architecture: amd64
@@ -155,22 +170,136 @@ jobs:
           EOF
 
           dpkg-deb --build $PKG \
-            "audiobook-reader_${{ steps.version.outputs.version }}_amd64.deb"
+            "audiobook-reader_${{ needs.version.outputs.version }}_amd64.deb"
+
+      - name: Validate packaging metadata
+        working-directory: app/packaging/linux
+        run: desktop-file-validate *.desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            audiobook-reader-*.AppImage
+            audiobook-reader-*.tar.gz
+            audiobook-reader_*.deb
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    # A specific runner image, not `macos-latest`: that label moves between
+    # macOS and Xcode major versions without a commit of ours, which is the
+    # same class of silent drift the Flutter pin above exists to prevent.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Kept in lockstep with the linux job — see the note there.
+          flutter-version: 3.41.6
+          channel: stable
+          cache: true
+
+      - name: Build
+        working-directory: app
+        run: |
+          flutter config --enable-macos-desktop
+          flutter pub get
+          flutter build macos --release
+
+      - name: Test
+        working-directory: app
+        run: flutter test --concurrency=1
+
+      # hdiutil ships with macOS, so this needs no extra tooling. The .app name
+      # is globbed rather than hardcoded: it follows the Xcode product name,
+      # which is not the same string as the pubspec package name.
+      - name: Package .dmg
+        run: |
+          set -eu
+          APP=$(find app/build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP" || { echo "No .app produced"; exit 1; }
+          mkdir -p dmg-staging
+          cp -R "$APP" dmg-staging/
+          # A symlink to /Applications makes the DMG a drag-to-install window
+          # rather than a folder the user has to work out what to do with.
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create \
+            -volname "Audier" \
+            -srcfolder dmg-staging \
+            -ov -format UDZO \
+            "audiobook-reader-${{ needs.version.outputs.version }}-macos.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: audiobook-reader-*.dmg
+          if-no-files-found: error
+
+  windows:
+    needs: version
+    # Pinned for the same reason as macos above.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Kept in lockstep with the linux job — see the note there.
+          flutter-version: 3.41.6
+          channel: stable
+          cache: true
+
+      - name: Build
+        working-directory: app
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release
+
+      - name: Test
+        working-directory: app
+        run: flutter test --concurrency=1
+
+      # A plain zip rather than an installer: an .msi or .msix has to be signed
+      # to install without a scary prompt, and no signing certificate exists for
+      # this project yet. An unsigned zip is honest about what it is.
+      - name: Package .zip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = 'app/build/windows/x64/runner/Release'
+          if (-not (Test-Path $bundle)) { throw "No Windows bundle at $bundle" }
+          Compress-Archive -Path "$bundle/*" `
+            -DestinationPath "audiobook-reader-${{ needs.version.outputs.version }}-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: audiobook-reader-*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, macos, windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Audiobook Reader ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Audiobook Reader ${{ needs.version.outputs.tag }}
           generate_release_notes: true
-          files: |
-            audiobook-reader-*.AppImage
-            audiobook-reader-*.tar.gz
-            audiobook-reader_*.deb
+          files: artifacts/*
           body: |
             ## Install
 
-            **Anything (no root, no package manager)**
+            **Linux — anything (no root, no package manager)**
             ```bash
             chmod +x audiobook-reader-*.AppImage
             ./audiobook-reader-*.AppImage
@@ -182,11 +311,23 @@ jobs:
             sudo apt -f install    # if dependencies are missing
             ```
 
-            **Tarball**
+            **Linux tarball**
             ```bash
             tar xzf audiobook-reader-*-linux-x64.tar.gz
             ./audiobook-reader/audiobook_reader
             ```
+
+            **macOS**
+
+            Open the `.dmg` and drag the app to Applications. The build is not
+            signed or notarized, so the first launch needs Control-click → Open
+            rather than a double-click; macOS will refuse it otherwise.
+
+            **Windows**
+
+            Unzip anywhere and run `audiobook_reader.exe`. The build is not
+            signed, so SmartScreen will warn on first run — choose "More info"
+            then "Run anyway".
 
             ## Optional extras
 
@@ -194,10 +335,20 @@ jobs:
             feature needs one.
 
             ```bash
+            # Linux
             sudo apt install tesseract-ocr                        # scanned pages
             sudo apt install speech-dispatcher speech-dispatcher-espeak-ng
-            curl -fsSL https://ollama.com/install.sh | sh         # local AI
+
+            # macOS
+            brew install tesseract
+
+            # Windows
+            winget install UB-Mannheim.TesseractOCR
             ```
 
+            Local AI is optional and off by default — install Ollama from
+            https://ollama.com to enable it.
+
             For a neural voice rather than the robotic system one, install Piper
-            and a voice — the app shows the exact commands in Settings.
+            and a voice — the app shows the exact commands for your platform in
+            Settings.

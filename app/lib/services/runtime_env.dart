@@ -61,6 +61,38 @@ class RuntimeEnv {
     return 'native';
   }
 
+  /// The user's home directory, whatever the platform calls it.
+  ///
+  /// `$HOME` is not set on Windows, so a lookup written against it silently
+  /// resolves to `''` there and every `~/...` candidate collapses to a relative
+  /// path that never matches. That failure is invisible: the app simply reports
+  /// the helper as "not installed" on a machine where it is.
+  static String get homeDir =>
+      Platform.environment[Platform.isWindows ? 'USERPROFILE' : 'HOME'] ?? '';
+
+  /// The per-user application data directory helpers install themselves into.
+  ///
+  /// Each desktop has its own convention, and a tool installed by its own
+  /// installer lands in the platform's spot rather than a shared one.
+  static String get appDataDir {
+    final home = homeDir;
+    if (home.isEmpty) return '';
+    if (Platform.isWindows) {
+      return Platform.environment['LOCALAPPDATA'] ??
+          p.join(home, 'AppData', 'Local');
+    }
+    if (Platform.isMacOS) return p.join(home, 'Library', 'Application Support');
+    return Platform.environment['XDG_DATA_HOME'] ??
+        p.join(home, '.local', 'share');
+  }
+
+  /// Executable name for [binary] on this platform.
+  ///
+  /// Windows will not run an extensionless file, so every candidate path and
+  /// every `where` lookup needs the suffix.
+  static String exeName(String binary) =>
+      Platform.isWindows && !binary.endsWith('.exe') ? '$binary.exe' : binary;
+
   /// Directories searched for bundled helper binaries, in priority order.
   static List<String> get bundledBinDirs {
     final snap = snapRoot;
@@ -79,13 +111,14 @@ class RuntimeEnv {
   ///
   /// Returns an absolute path, or null when it genuinely is not available.
   static String? findBinary(String binary) {
+    final exe = exeName(binary);
     for (final dir in bundledBinDirs) {
-      final candidate = p.join(dir, binary);
+      final candidate = p.join(dir, exe);
       if (File(candidate).existsSync()) return candidate;
     }
     // A confined build cannot execute host binaries, so do not pretend it can.
     if (isSandboxed) return null;
-    return _which(binary);
+    return _which(exe);
   }
 
   static String? _which(String binary) {

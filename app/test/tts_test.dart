@@ -2,12 +2,36 @@ import 'dart:io' show Platform;
 
 import 'package:audiobook_reader/services/piper_tts.dart';
 import 'package:audiobook_reader/services/tts_service.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   // TtsService constructs a FlutterTts, which registers a method-channel
   // handler and therefore needs the binding.
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  // Off Linux, TtsService drives flutter_tts rather than a subprocess, so any
+  // test touching rate or volume reaches a method channel that has no
+  // implementation under `flutter test` — the failure is
+  // MissingPluginException, not an assertion, which makes it look like the
+  // logic broke when only the plugin is absent.
+  //
+  // Stubbing the channel keeps these tests about what they are actually for:
+  // the clamping and state TtsService does itself, on every platform. It went
+  // unnoticed while the suite only ever ran on Linux, where this path is
+  // skipped entirely.
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('flutter_tts'),
+      (call) async => 1,
+    );
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('flutter_tts'), null);
+  });
 
   group('engine selection', () {
     test('reports which engine will actually be used', () {

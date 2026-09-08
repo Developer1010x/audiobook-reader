@@ -1,5 +1,10 @@
 # Runs on every push and pull request, so a broken main is caught before anyone
 # downloads a release built from it.
+#
+# The build matrix covers all three desktop targets. This is not redundancy for
+# its own sake: most of what breaks a port is invisible to the analyzer — a path
+# separator, a missing plugin registration, a subprocess that only exists on one
+# OS. Only a real per-OS build catches those.
 name: CI
 
 on:
@@ -9,7 +14,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  analyze-and-test:
+  analyze:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +34,49 @@ jobs:
           channel: stable
           cache: true
 
+      - name: Fetch packages
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: app
+        run: flutter analyze --no-fatal-infos
+
+  # Tests run on every OS, not just Linux. The suite touches paths, file IO and
+  # binary discovery, which are exactly the things that differ per platform — a
+  # Linux-only test run would pass right up until a Windows user opened a book.
+  test-and-build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide the state of the other two.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux
+            build: flutter build linux --release
+          - os: macos-14
+            name: macos
+            build: flutter build macos --release
+          - os: windows-2022
+            name: windows
+            build: flutter build windows --release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          # Kept in lockstep with the `analyze` job above — see the note there
+          # for why this is pinned rather than tracking stable.
+          flutter-version: 3.41.6
+          channel: stable
+          cache: true
+
+      # Linux is the only target needing system libraries; the macOS and Windows
+      # runners ship their toolchains already.
       - name: Install build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -41,10 +88,6 @@ jobs:
         working-directory: app
         run: flutter pub get
 
-      - name: Analyze
-        working-directory: app
-        run: flutter analyze --no-fatal-infos
-
       # --concurrency=1 is deliberate: the parallel runner deadlocks on this
       # suite, which looks like a hang rather than a failure.
       - name: Test
@@ -54,11 +97,12 @@ jobs:
       - name: Build
         working-directory: app
         run: |
-          flutter config --enable-linux-desktop
-          flutter build linux --release
+          flutter config --enable-${{ matrix.name }}-desktop
+          ${{ matrix.build }}
 
       # Packaging metadata is easy to break silently and only fails at store
       # submission, which is far too late to find out.
       - name: Validate packaging metadata
+        if: runner.os == 'Linux'
         working-directory: app/packaging/linux
         run: desktop-file-validate *.desktop
