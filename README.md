@@ -1,5 +1,7 @@
 # Audier
 
+[![CI](https://github.com/Developer1010x/audiobook-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/Developer1010x/audiobook-reader/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Developer1010x/audiobook-reader)](https://github.com/Developer1010x/audiobook-reader/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE) ![Flutter: Linux](https://img.shields.io/badge/Flutter-Linux-02569B?logo=flutter&logoColor=white)
+
 **A private, local-first reader and audiobook player for the books you already own.**
 
 Open any PDF, EPUB, Markdown or text file. Read it on screen, have it read aloud in a
@@ -234,3 +236,7 @@ differ. Temperature is 0.3 throughout — summarising should be faithful, not cr
 ## Licence
 
 MIT licensed (see LICENSE). No book content is included in this repository.
+
+---
+
+Built by **S. Prajwall Narayana** · [Portfolio](https://sprajwallnarayana.vercel.app) · [GitHub](https://github.com/Developer1010x)
