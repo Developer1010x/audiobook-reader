@@ -190,7 +190,7 @@ jobs:
     # A specific runner image, not `macos-latest`: that label moves between
     # macOS and Xcode major versions without a commit of ours, which is the
     # same class of silent drift the Flutter pin above exists to prevent.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
