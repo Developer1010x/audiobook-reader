@@ -64,8 +64,14 @@ class OcrService {
     }
     final packaged = RuntimeEnv.installHint('Tesseract OCR');
     if (packaged.isNotEmpty) return packaged;
-    return 'This page is a scan and needs OCR. Install it with:\n'
-        '    sudo apt install tesseract-ocr';
+    // The command has to match the platform: `sudo apt` on a Mac is not just
+    // unhelpful, it reads as the app being broken rather than a tool missing.
+    final install = switch (Platform.operatingSystem) {
+      'macos' => '    brew install tesseract',
+      'windows' => '    winget install UB-Mannheim.TesseractOCR',
+      _ => '    sudo apt install tesseract-ocr',
+    };
+    return 'This page is a scan and needs OCR. Install it with:\n$install';
   }
 
   static String _key(Book book, int page) =>

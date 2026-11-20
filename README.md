@@ -1,6 +1,6 @@
 # Audier
 
-[![CI](https://github.com/Developer1010x/audiobook-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/Developer1010x/audiobook-reader/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Developer1010x/audiobook-reader)](https://github.com/Developer1010x/audiobook-reader/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE) ![Flutter: Linux](https://img.shields.io/badge/Flutter-Linux-02569B?logo=flutter&logoColor=white)
+[![CI](https://github.com/Developer1010x/audiobook-reader/actions/workflows/ci.yml/badge.svg)](https://github.com/Developer1010x/audiobook-reader/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Developer1010x/audiobook-reader)](https://github.com/Developer1010x/audiobook-reader/releases/latest) [![License: MIT](https://img.shields.io/badge/License-MIT-2EA44F)](LICENSE) ![Platforms: Linux | macOS | Windows](https://img.shields.io/badge/Flutter-Linux_%7C_macOS_%7C_Windows-02569B?logo=flutter&logoColor=white)
 
 **A private, local-first reader and audiobook player for the books you already own.**
 
@@ -12,7 +12,7 @@ Your books are read where they sit. Nothing is copied, uploaded or modified, and
 reaches a third party unless you name a cloud provider yourself.
 
 ```bash
-cd app && flutter run -d linux
+cd app && flutter run -d linux     # or -d macos, -d windows
 ```
 
 ---
@@ -68,31 +68,51 @@ and audio format, so an accidental `git add .` cannot leak a library.
 
 ## Install
 
+### Download
+
+[Latest release](https://github.com/Developer1010x/audiobook-reader/releases/latest):
+
+| Platform | File | Notes |
+|---|---|---|
+| Linux x86_64 | `.AppImage`, `.deb`, `.tar.gz` | |
+| macOS 12+ (Apple silicon and Intel) | `.dmg` | Not notarized: on first launch use System Settings → Privacy & Security → Open Anyway |
+| Windows 10/11 x64 | `.zip` | Not signed: SmartScreen → More info → Run anyway |
+
+On first launch, pick your library folder. It is scanned recursively and never written to.
+
 ### Run from source
 
 ```bash
 cd app
 flutter pub get
-flutter run -d linux        # or: -d macos, -d windows, -d android
+flutter run -d linux        # or: -d macos, -d windows
 ```
 
-On first launch, pick your library folder. It is scanned recursively and never written to.
+Use Flutter 3.41.6, the version CI pins (see `.github/workflows/ci.yml` for why).
 
-### Build and install a desktop binary
+### Build a desktop binary
 
 ```bash
 cd app
-flutter build linux --release          # → build/linux/x64/release/bundle
+flutter build linux --release     # → build/linux/x64/release/bundle
+flutter build macos --release     # → build/macos/Build/Products/Release/Audier.app
+flutter build windows --release   # → build/windows/x64/runner/Release
 ```
 
-Packaging manifests for **Flatpak** and **Snap** live in `app/packaging/` and `app/snap/`.
+Linux prerequisites: `sudo apt install libsecret-1-dev libjsoncpp-dev`. macOS needs
+Xcode and CocoaPods; Windows needs Visual Studio with the C++ desktop workload.
 
-Linux prerequisites: `sudo apt install libsecret-1-dev libjsoncpp-dev`
+Packaging manifests for **Flatpak** and **Snap** live in `app/packaging/` and `app/snap/`.
 
 ### Optional engines
 
 Every one of these is optional. The app degrades gracefully and tells you exactly what to
 install when a feature needs something that is missing.
+
+The commands below are for Linux. On macOS and Windows, Settings shows the exact Piper
+commands for your platform; for OCR use `brew install tesseract` (macOS) or
+`winget install UB-Mannheim.TesseractOCR` (Windows), and get Ollama from
+[ollama.com](https://ollama.com).
 
 ```bash
 # Neural voice — strongly recommended; the system voice is robotic

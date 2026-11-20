@@ -19,7 +19,22 @@ void main() {
       // would be nonsense.
       final message = OcrService.unavailableMessage;
       if (OcrService.isSupportedPlatform) {
-        expect(message, contains(RuntimeEnv.isSandboxed ? "missing from this" : "tesseract-ocr"));
+        // Each desktop installs Tesseract its own way, and naming the wrong
+        // package manager is as useless as naming none: `sudo apt` on a Mac
+        // reads as the app being broken rather than the tool being absent.
+        final expected = switch (Platform.operatingSystem) {
+          'macos' => 'brew install tesseract',
+          'windows' => 'winget install',
+          _ => 'tesseract-ocr',
+        };
+        expect(
+          message,
+          contains(RuntimeEnv.isSandboxed ? 'missing from this' : expected),
+        );
+        // Whatever the platform, never hand over another one's command.
+        if (!Platform.isLinux && !RuntimeEnv.isSandboxed) {
+          expect(message, isNot(contains('apt install')));
+        }
       } else {
         expect(message, contains('not available on this platform'));
         expect(message, isNot(contains('apt')));

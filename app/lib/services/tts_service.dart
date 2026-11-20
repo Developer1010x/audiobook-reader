@@ -140,9 +140,20 @@ class TtsService extends ChangeNotifier {
   }
 
   /// Human-readable reason speech is unavailable, for the UI to show.
-  static String get unavailableMessage =>
-      'No speech engine found. Install one with:\n'
-      '    sudo apt install speech-dispatcher speech-dispatcher-espeak-ng';
+  ///
+  /// Only Linux can genuinely have no engine at all: macOS and Windows both
+  /// ship a system voice that `flutter_tts` drives, so the only thing worth
+  /// suggesting there is Piper, for a better one.
+  static String get unavailableMessage {
+    if (Platform.isLinux) {
+      return 'No speech engine found. Install one with:\n'
+          '    sudo apt install speech-dispatcher speech-dispatcher-espeak-ng\n'
+          '\nOr, for a far better voice:\n${PiperTts.installMessage}';
+    }
+    return 'No speech engine found. The system voice should be available here; '
+        'check that a voice is installed in the system settings.\n'
+        '\nOr install Piper for a better one:\n${PiperTts.installMessage}';
+  }
 
   /// Fires when a chunk finishes, so the reader can turn the page and continue.
   VoidCallback? onPageFinished;
