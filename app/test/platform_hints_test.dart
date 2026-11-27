@@ -23,12 +23,19 @@ void main() {
     expect(hint, Platform.isLinux ? apt : isNot(apt));
   });
 
-  // Read-aloud uses Piper only on Linux; elsewhere install steps would send
-  // users to install a voice the app then ignores.
-  test('Piper is only advertised where it is used', () {
+  // Piper is used wherever it is installed, so its install steps are offered
+  // on Linux and Windows. Not on macOS: the pip wheel crashes there (its
+  // espeak-ng data path is baked in at build time), so steps would lead to a
+  // crash rather than a voice.
+  test('Piper install steps are offered only where they work', () {
     final piper = contains('piper-tts');
-    expect(PiperTts.installMessage, Platform.isLinux ? piper : isNot(piper));
-    expect(TtsService.unavailableMessage,
-        Platform.isLinux ? piper : isNot(piper));
+    final offered = Platform.isLinux || Platform.isWindows;
+    expect(PiperTts.installMessage, offered ? piper : isNot(piper));
+    expect(TtsService.unavailableMessage, offered ? piper : isNot(piper));
+    // ...and in that platform's own paths.
+    if (Platform.isWindows) {
+      expect(PiperTts.installMessage, isNot(contains('~/.local')));
+      expect(PiperTts.installMessage, contains(r'$env:LOCALAPPDATA'));
+    }
   });
 }
