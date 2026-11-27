@@ -6,6 +6,7 @@ import '../models/annotation.dart';
 import '../models/bookmark.dart';
 import 'llm/ai_mode.dart';
 import 'llm/summary_length.dart';
+import 'pronunciations.dart';
 import 'sleep_timer.dart';
 
 /// App settings and API keys.
@@ -256,6 +257,34 @@ class SettingsService {
   /// Chosen Piper voice, remembered across sessions.
   String? get voice => _prefs.getString('tts_voice');
   Future<void> setVoice(String name) => _prefs.setString('tts_voice', name);
+
+  /// The voice for one book: its own choice, else the last voice picked
+  /// anywhere. A narrator chosen for one novel should not follow the user into
+  /// a textbook, but a new book should start with the voice they like.
+  String? voiceFor(String bookId) =>
+      _prefs.getString('tts_voice:$bookId') ?? voice;
+
+  Future<void> setVoiceFor(String bookId, String name) async {
+    await _prefs.setString('tts_voice:$bookId', name);
+    await setVoice(name);
+  }
+
+  /// Speech rate for one book (TtsService's 0.1–1.0 scale), or null before it
+  /// was ever changed there. Kept per book only: a textbook read slowly and a
+  /// thriller read fast are both the norm, and a global rate would make every
+  /// switch between them a re-adjustment.
+  double? rateFor(String bookId) => _prefs.getDouble('tts_rate:$bookId');
+
+  Future<void> setRateFor(String bookId, double rate) =>
+      _prefs.setDouble('tts_rate:$bookId', rate.clamp(0.1, 1.0));
+
+  /// Words the voice gets wrong, as the user typed them (`term = spoken as`
+  /// lines). Kept as text rather than a map so comments and order survive.
+  String get pronunciationsText => _prefs.getString('pronunciations') ?? '';
+  Map<String, String> get pronunciations =>
+      Pronunciations.parse(pronunciationsText);
+  Future<void> setPronunciationsText(String text) =>
+      _prefs.setString('pronunciations', text);
 
   // ── appearance ──
   bool get nightMode => _prefs.getBool('night_mode') ?? false;

@@ -39,6 +39,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _editPronunciations() async {
+    final controller =
+        TextEditingController(text: widget.settings.pronunciationsText);
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Pronunciations'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'One per line: word = how to say it. Whole words, any case. '
+                'Takes effect the next time a book is opened.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                minLines: 6,
+                maxLines: 12,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'Hermione = her-my-oh-nee\nSQL = sequel',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (saved == true) {
+      await widget.settings.setPronunciationsText(controller.text);
+      if (mounted) setState(() {});
+    }
+    controller.dispose();
+  }
+
   Future<void> _editKey(LlmProvider provider) async {
     final controller = TextEditingController();
     final saved = await showDialog<bool>(
@@ -314,6 +366,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ),
           for (final p in kProviders) _providerTile(p, selected),
+          const Divider(height: 32),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+            child: Text('Read-aloud', style: theme.textTheme.titleMedium),
+          ),
+          ListTile(
+            leading: const Icon(Icons.record_voice_over_outlined),
+            title: const Text('Pronunciations'),
+            subtitle: Text(
+              switch (widget.settings.pronunciations.length) {
+                0 => 'Fix names and terms the voice gets wrong',
+                1 => '1 word',
+                final n => '$n words',
+              },
+              style: const TextStyle(fontSize: 12),
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _editPronunciations,
+          ),
           const Divider(height: 32),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),

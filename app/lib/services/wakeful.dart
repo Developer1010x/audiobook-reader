@@ -1,6 +1,8 @@
 import 'dart:ffi';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'runtime_env.dart';
 
 // ── Windows: SetThreadExecutionState ──
@@ -37,6 +39,10 @@ class Wakeful {
 
   static bool get isHeld => _claims > 0;
 
+  /// Whether an inhibitor child process is currently alive, for tests.
+  @visibleForTesting
+  static bool get debugHasInhibitor => _inhibitor != null;
+
   /// Claim wakefulness. Balance every call with [release].
   static Future<void> acquire() async {
     _claims++;
@@ -62,7 +68,16 @@ class Wakeful {
     if (spawn == null) return;
 
     try {
-      _inhibitor = await Process.start(spawn.first, spawn.sublist(1));
+      final started = await Process.start(spawn.first, spawn.sublist(1));
+      // The claim was counted before this await, so a release() — or a
+      // release and a fresh acquire() — may have run meanwhile. Keep the child
+      // only if a claim still stands and no other spawn already won; otherwise
+      // it would hold the machine awake with nothing left to release it.
+      if (_claims == 0 || _inhibitor != null) {
+        started.kill();
+      } else {
+        _inhibitor = started;
+      }
     } catch (_) {
       // A missing inhibitor is not worth failing playback over; the screen may
       // dim, but the book still reads.

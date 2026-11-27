@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../models/annotation.dart';
 import '../models/bookmark.dart';
+import '../services/audiobook_exporter.dart';
 import '../services/chapter_index.dart';
 import '../services/classifier.dart';
 import '../services/settings_service.dart';
@@ -15,10 +16,12 @@ import '../services/text_document.dart';
 import '../services/media_player_service.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
+import 'export_sheet.dart';
 import 'music_sheet.dart';
 import 'notes_sheet.dart';
 import 'reader_playback.dart';
 import 'summary_sheet.dart';
+import 'widgets/reader_shortcuts.dart';
 
 /// Reader for `.txt`, `.md` and `.epub`.
 ///
@@ -74,7 +77,6 @@ class _TextReaderScreenState extends State<TextReaderScreen>
   void initState() {
     super.initState();
     _tts = TtsService()..addListener(_onTts);
-    _tts.voice = widget.settings.voice;
     _tts.onSegment = (index) {
       if (!mounted) return;
       final active = index == null ? null : _sentenceOffset + index;
@@ -450,6 +452,24 @@ class _TextReaderScreenState extends State<TextReaderScreen>
     );
   }
 
+  Future<void> _export() async {
+    final doc = _doc;
+    if (doc == null) return;
+    await exportAudiobook(
+      context,
+      bookId: widget.book.id,
+      title: widget.book.title,
+      chapters:
+          AudiobookExporter.plan(_chapters, doc.pageCount, widget.book.title),
+      textOf: (start, end) async => [
+        for (final page in doc.pages)
+          if (page.number >= start && page.number <= end) page.text,
+      ].join('\n\n'),
+      settings: widget.settings,
+      rate: _tts.rate,
+    );
+  }
+
   void _snack(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
@@ -471,7 +491,25 @@ class _TextReaderScreenState extends State<TextReaderScreen>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ReaderShortcuts(
+        enabled: !inCarMode,
+        onPlayPause: () => unawaited(togglePlay()),
+        onSkipSentence: (d) => unawaited(skipSentences(d)),
+        onRateStep: (d) => unawaited(nudgeRate(d)),
+        // _goToPage clamps; skipping a no-op keeps a key held at the last page
+        // from re-recording it as a page read.
+        onPage: (d) {
+          final count = pageCount;
+          if (count == 0) return;
+          final target = (_page + d).clamp(1, count);
+          if (target != _page) _goToPage(target);
+        },
+        onBookmark: () => unawaited(_toggleBookmark()),
+        onBack: () => Navigator.maybePop(context),
+        child: Builder(builder: _buildScreen),
+      );
+
+  Widget _buildScreen(BuildContext context) {
     final theme = Theme.of(context);
     final doc = _doc;
     final bookmarked =
@@ -578,6 +616,8 @@ class _TextReaderScreenState extends State<TextReaderScreen>
                 _openBookmarks();
               case 'autoscroll':
                 setState(() => _autoScroll = !_autoScroll);
+              case 'export':
+                _export();
             }
           },
           itemBuilder: (context) => [
@@ -630,6 +670,14 @@ class _TextReaderScreenState extends State<TextReaderScreen>
                 dense: true,
                 leading: Icon(Icons.bookmarks_outlined),
                 title: Text('All bookmarks'),
+              ),
+            ),
+            const PopupMenuItem(
+              value: 'export',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.file_download_outlined),
+                title: Text('Export audiobook (.m4b)'),
               ),
             ),
             CheckedPopupMenuItem(

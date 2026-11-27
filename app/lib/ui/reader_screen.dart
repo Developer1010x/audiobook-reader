@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdfrx/pdfrx.dart';
@@ -5,6 +7,7 @@ import 'package:pdfrx/pdfrx.dart';
 import '../models/book.dart';
 import '../models/annotation.dart';
 import '../models/bookmark.dart';
+import '../services/audiobook_exporter.dart';
 import '../services/chapter_index.dart';
 import '../services/classifier.dart';
 import '../services/document_cache.dart';
@@ -18,10 +21,12 @@ import '../services/stats_service.dart';
 import '../services/media_player_service.dart';
 import '../services/tts_service.dart';
 import 'bookmarks_sheet.dart';
+import 'export_sheet.dart';
 import 'music_sheet.dart';
 import 'notes_sheet.dart';
 import 'reader_playback.dart';
 import 'summary_sheet.dart';
+import 'widgets/reader_shortcuts.dart';
 
 class ReaderScreen extends StatefulWidget {
   final Book book;
@@ -107,7 +112,6 @@ class _ReaderScreenState extends State<ReaderScreen>
       setState(() => _activeSegment = active);
       if (active != null && _autoScroll) _scrollToSegment(active);
     };
-    _tts.voice = widget.settings.voice;
     initPlayback();
     _resolveType();
     _checkTts();
@@ -651,6 +655,19 @@ class _ReaderScreenState extends State<ReaderScreen>
     );
   }
 
+  Future<void> _export() => exportAudiobook(
+        context,
+        bookId: widget.book.id,
+        title: widget.book.title,
+        chapters: AudiobookExporter.plan(_chapters, _pageCount, widget.book.title),
+        // OCR included: a scanned book is exactly the kind someone wants to
+        // listen to, and recognised pages are cached for the reader too.
+        textOf: (start, end) =>
+            ReaderService.rangeText(widget.book, start, end, ocrFallback: true),
+        settings: widget.settings,
+        rate: _tts.rate,
+      );
+
   Future<void> _pickVoice() async {
     final voices = _tts.availableVoices;
     if (voices.isEmpty) {
@@ -685,8 +702,9 @@ class _ReaderScreenState extends State<ReaderScreen>
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
             child: Text(
-              'More voices:\n'
-              '  ~/.local/share/piper-venv/bin/python -m piper.download_voices <name>',
+              // The folder, not a Linux-only command: voices are just .onnx +
+              // .onnx.json pairs, so this holds on every platform.
+              'More voices: add .onnx voice files to\n  ${PiperTts.voiceDir}',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
@@ -695,7 +713,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     );
     if (chosen == null) return;
     setState(() => _tts.voice = chosen);
-    await widget.settings.setVoice(chosen);
+    await widget.settings.setVoiceFor(widget.book.id, chosen);
   }
 
   /// Turn `en_GB-alba-medium` into something readable.
@@ -860,8 +878,41 @@ class _ReaderScreenState extends State<ReaderScreen>
     super.dispose();
   }
 
+  /// Page keys follow the arrow buttons' rules: nothing before the viewer is
+  /// laid out (goToPage throws then) and nothing past either end of the book.
+  void _turnPage(int delta) {
+    if (_pageCount == 0) return;
+    final target = (_page + delta).clamp(1, _pageCount);
+    if (target != _page) _controller.goToPage(pageNumber: target);
+  }
+
+  void _openSearch() {
+    setState(() => _searching = true);
+    _searchFocus.requestFocus();
+  }
+
+  void _closeSearch() {
+    _searcher?.resetTextSearch();
+    _searchField.clear();
+    setState(() => _searching = false);
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ReaderShortcuts(
+        enabled: !inCarMode,
+        onPlayPause: () => unawaited(togglePlay()),
+        onSkipSentence: (d) => unawaited(skipSentences(d)),
+        onRateStep: (d) => unawaited(nudgeRate(d)),
+        onPage: _turnPage,
+        onBookmark: () => unawaited(_toggleBookmark()),
+        onSearch: _openSearch,
+        // Esc closes an open search first; only then does it leave the book.
+        onBack: () =>
+            _searching ? _closeSearch() : Navigator.maybePop(context),
+        child: Builder(builder: _buildScreen),
+      );
+
+  Widget _buildScreen(BuildContext context) {
     final theme = Theme.of(context);
     final isTextbook = _type == BookType.textbook;
 
@@ -974,10 +1025,7 @@ class _ReaderScreenState extends State<ReaderScreen>
         IconButton(
           icon: const Icon(Icons.search),
           tooltip: 'Search in book',
-          onPressed: () {
-            setState(() => _searching = true);
-            _searchFocus.requestFocus();
-          },
+          onPressed: _openSearch,
         ),
         IconButton(
           icon: Icon(widget.settings.isBookmarked(widget.book.id, _page)
@@ -1006,6 +1054,8 @@ class _ReaderScreenState extends State<ReaderScreen>
                 _openBookmarks();
               case 'voice':
                 _pickVoice();
+              case 'export':
+                _export();
               case 'tap':
                 setState(() => _readFromTap = !_readFromTap);
               case 'autoscroll':
@@ -1084,6 +1134,14 @@ class _ReaderScreenState extends State<ReaderScreen>
                     style: const TextStyle(fontSize: 11)),
               ),
             ),
+            const PopupMenuItem(
+              value: 'export',
+              child: ListTile(
+                dense: true,
+                leading: Icon(Icons.file_download_outlined),
+                title: Text('Export audiobook (.m4b)'),
+              ),
+            ),
             CheckedPopupMenuItem(
               value: 'tap',
               checked: _readFromTap,
@@ -1135,11 +1193,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.arrow_back),
-        onPressed: () {
-          _searcher?.resetTextSearch();
-          _searchField.clear();
-          setState(() => _searching = false);
-        },
+        onPressed: _closeSearch,
       ),
       title: TextField(
         controller: _searchField,

@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 
 import 'concurrency.dart';
 import 'piper_tts.dart';
+import 'pronunciations.dart';
 import 'runtime_env.dart';
 
 /// Read-aloud. Uses the OS voice on every platform, so nothing is sent anywhere —
@@ -21,7 +22,7 @@ import 'runtime_env.dart';
 class TtsService extends ChangeNotifier {
   final FlutterTts _tts = FlutterTts();
 
-  /// The spd-say process currently speaking, on Linux only.
+  /// The spd-say or Piper player process currently speaking.
   Process? _linuxProcess;
 
   bool _speaking = false;
@@ -31,6 +32,9 @@ class TtsService extends ChangeNotifier {
 
   /// Piper voice name; null means the first installed voice.
   String? _voice;
+
+  /// The user's pronunciation fixes, applied to everything spoken.
+  Map<String, String> pronunciations = const {};
 
   /// Piper is preferred when installed, but can be turned off to fall back to
   /// the faster, worse system voice.
@@ -77,11 +81,13 @@ class TtsService extends ChangeNotifier {
 
   /// Which engine will actually be used, for display in the UI.
   static String get engineName {
-    if (!_usesLinuxBackend) return 'System voice';
-    return PiperTts.isAvailable ? 'Piper (neural)' : 'espeak-ng (robotic)';
+    if (PiperTts.isAvailable) return 'Piper (neural)';
+    return _usesLinuxBackend ? 'espeak-ng (robotic)' : 'System voice';
   }
 
-  List<String> get availableVoices => PiperTts.isAvailable ? PiperTts.voices : const [];
+  /// Installed Piper voices; empty when Piper is not installed.
+  List<String> get availableVoices =>
+      PiperTts.isAvailable ? PiperTts.voices : const [];
 
   String? get voice => _voice;
   set voice(String? value) {
@@ -89,7 +95,7 @@ class TtsService extends ChangeNotifier {
     notifyListeners();
   }
 
-  bool get usingPiper => _usesLinuxBackend && PiperTts.isAvailable && _preferPiper;
+  bool get usingPiper => PiperTts.isAvailable && _preferPiper;
   set preferPiper(bool value) {
     _preferPiper = value;
     notifyListeners();
@@ -182,10 +188,20 @@ class TtsService extends ChangeNotifier {
   /// highlight it. Null when speech stops.
   void Function(int? index)? onSegment;
 
+  /// What actually reaches an engine: cleaned of PDF artefacts, then with the
+  /// user's pronunciations applied.
+  String _prepare(String text) =>
+      Pronunciations.apply(_clean(text), pronunciations);
+
   Future<void> speak(String text) async {
-    final clean = _clean(text);
+    final clean = _prepare(text);
     if (clean.isEmpty) return;
 
+    if (usingPiper) {
+      await stop();
+      await _speakPiper(_chunk(clean));
+      return;
+    }
     if (_usesLinuxBackend) {
       await _speakLinux(clean);
       return;
@@ -204,9 +220,10 @@ class TtsService extends ChangeNotifier {
   /// starts.
   Future<void> speakSegments(List<String> segments) async {
     if (segments.isEmpty) return;
-    if (_usesLinuxBackend && PiperTts.isAvailable && _preferPiper) {
+    if (usingPiper) {
       await stop();
-      await _speakPiper(segments.map(_clean).where((s) => s.isNotEmpty).toList());
+      await _speakPiper(
+          segments.map(_prepare).where((s) => s.isNotEmpty).toList());
       return;
     }
     // Engines without per-segment control still speak, just without follow-along.
@@ -216,10 +233,6 @@ class TtsService extends ChangeNotifier {
 
   Future<void> _speakLinux(String text) async {
     await stop();
-    if (PiperTts.isAvailable && _preferPiper) {
-      await _speakPiper(_chunk(text));
-      return;
-    }
     // spd-say rate is -100..100; the app's 0.1..1.0 maps onto it with 0.5 as normal.
     final rate = ((_rate - 0.5) * 200).round().clamp(-100, 100);
     try {
@@ -408,6 +421,12 @@ class TtsService extends ChangeNotifier {
   /// voice does not break mid-clause. Roughly [_chunkChars] each.
   static const _chunkChars = 350;
 
+  /// Text exactly as playback would speak it, in Piper-sized chunks, for an
+  /// export that must sound the same as listening in the app.
+  static List<String> speakableChunks(
+          String text, Map<String, String> pronunciations) =>
+      _chunk(Pronunciations.apply(_clean(text), pronunciations));
+
   static List<String> _chunk(String text) {
     final sentences = text.split(RegExp(r'(?<=[.!?])\s+'));
     final chunks = <String>[];
@@ -433,8 +452,9 @@ class TtsService extends ChangeNotifier {
   }
 
   Future<void> pause() async {
-    if (_usesLinuxBackend) {
-      // speech-dispatcher has no reliable per-process pause; stopping is honest.
+    if (_usesLinuxBackend || usingPiper) {
+      // Neither speech-dispatcher nor a one-shot player process has a reliable
+      // pause; stopping is honest.
       await stop();
       return;
     }
@@ -444,27 +464,28 @@ class TtsService extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    // The Piper teardown runs on every platform, whichever engine is selected
+    // now: a Piper session may still be playing after Piper was switched off.
+    _session++; // invalidates any in-flight Piper chunk pipeline
+    // That pipeline will not clear the spinner itself: its finally only
+    // restores state for the *current* session. Stopping while the first
+    // chunk is still rendering would otherwise leave "preparing" up for good,
+    // and the Play button stuck as a spinner. Cleared here, synchronously
+    // with the session bump, so a speak() racing this stop cannot have its
+    // own spinner cleared by us afterwards.
+    _preparing = false;
+    onSegment?.call(null);
+    final process = _linuxProcess;
+    _linuxProcess = null; // clear first, so the exit handler stays quiet
+    process?.kill();
     if (_usesLinuxBackend) {
-      _session++; // invalidates any in-flight Piper chunk pipeline
-      // That pipeline will not clear the spinner itself: its finally only
-      // restores state for the *current* session. Stopping while the first
-      // chunk is still rendering would otherwise leave "preparing" up for good,
-      // and the Play button stuck as a spinner. Cleared here, synchronously
-      // with the session bump, so a speak() racing this stop cannot have its
-      // own spinner cleared by us afterwards.
-      _preparing = false;
-      onSegment?.call(null);
-      final process = _linuxProcess;
-      _linuxProcess = null; // clear first, so the exit handler stays quiet
-      process?.kill();
       try {
         final spd = RuntimeEnv.findBinary('spd-say');
         if (spd != null) await Process.run(spd, ['-C']); // cancel queued speech
       } catch (_) {}
-      _reset();
-      return;
+    } else {
+      await _tts.stop();
     }
-    await _tts.stop();
     _reset();
   }
 

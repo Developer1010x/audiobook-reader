@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../services/chapter_index.dart';
 import '../services/media_player_service.dart';
+import '../services/playback_remote.dart';
 import '../services/settings_service.dart';
 import '../services/sleep_timer.dart';
 import '../services/tts_service.dart';
@@ -128,7 +129,24 @@ mixin ReaderPlayback<T extends StatefulWidget> on State<T> {
   // ── lifecycle ──
 
   /// Call from the host's `initState`, once its [TtsService] exists.
+  /// This reader's handle in [PlaybackRemote], for the tray and media keys.
+  late final PlaybackTarget _remote = PlaybackTarget(
+    title: bookTitle,
+    isPlaying: () => tts.isSpeaking,
+    togglePlay: togglePlay,
+    stop: tts.stop,
+    skip: skipSentences,
+  );
+
+  void _notifyRemote() => PlaybackRemote.instance.changed();
+
   void initPlayback() {
+    PlaybackRemote.instance.claim(_remote);
+    tts.addListener(_notifyRemote);
+    tts.voice = settings.voiceFor(book.id);
+    tts.pronunciations = settings.pronunciations;
+    final rate = settings.rateFor(book.id);
+    if (rate != null) unawaited(tts.setRate(rate));
     _sleep
       ..onExpire = _onSleepExpired
       ..onFadeTick = (volume) => unawaited(tts.setVolume(volume));
@@ -146,6 +164,8 @@ mixin ReaderPlayback<T extends StatefulWidget> on State<T> {
   /// unable to idle after the reader is gone is the one failure a user would
   /// never trace back to this app.
   void disposePlayback() {
+    tts.removeListener(_notifyRemote);
+    PlaybackRemote.instance.release(_remote);
     _skipDebounce?.cancel();
     _rateDebounce?.cancel();
     tts.onBoundaryStop = null;
@@ -370,6 +390,7 @@ mixin ReaderPlayback<T extends StatefulWidget> on State<T> {
   /// overshoots. Re-hearing one sentence is much the cheaper mistake.
   Future<void> setSpeechRate(double rate) async {
     await tts.setRate(rate);
+    unawaited(settings.setRateFor(book.id, tts.rate));
     _rateDebounce?.cancel();
     if (tts.isSpeaking) {
       _rateDebounce = Timer(const Duration(milliseconds: 400), () {
@@ -377,6 +398,17 @@ mixin ReaderPlayback<T extends StatefulWidget> on State<T> {
       });
     }
     if (mounted) setState(() {});
+  }
+
+  /// Step the speech rate [steps] rungs along Car Mode's speed ladder.
+  ///
+  /// The ladder rather than a fixed increment, so ↑/↓ in the reader and in Car
+  /// Mode land on the same named speeds (1.0×, 1.25×, …) instead of two scales.
+  Future<void> nudgeRate(int steps) async {
+    final i = (carSpeedIndex(tts.rate) + steps)
+        .clamp(0, kCarSpeedLadder.length - 1);
+    final target = kCarSpeedLadder[i].rate;
+    if (target != tts.rate) await setSpeechRate(target);
   }
 
   // ── Car Mode ──

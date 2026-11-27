@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:pdfrx/pdfrx.dart';
 
+import 'services/desktop_tray.dart';
+import 'services/mpris_server.dart';
 import 'services/settings_service.dart';
 import 'services/stats_service.dart';
 import 'services/theme_controller.dart';
@@ -19,6 +21,11 @@ Future<void> main() async {
     stats: stats,
     theme: theme,
   ));
+
+  // After runApp, so neither can delay the first frame; both fail quietly on
+  // a desktop without a tray or a session bus.
+  await DesktopTray.start();
+  await MprisServer.start();
 }
 
 class AudiobookReaderApp extends StatelessWidget {

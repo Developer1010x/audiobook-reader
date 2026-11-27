@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
+import 'mpris_server.dart';
 import 'runtime_env.dart';
 
 /// Background audio while you read.
@@ -37,8 +38,26 @@ class MediaPlayerService extends ChangeNotifier {
   /// Whether anything can play audio files at all.
   static bool get canPlayFiles => _playerBinary != null;
 
+  /// Per platform: the PulseAudio/PipeWire/ALSA tools exist only on Linux,
+  /// and afplay ships with every Mac (mp3, m4a, wav — not ogg or opus).
+  static List<String> get _playerCandidates {
+    if (Platform.isMacOS) return const ['mpv', 'ffplay', 'afplay'];
+    if (Platform.isWindows) return const ['mpv', 'ffplay'];
+    return const ['mpv', 'ffplay', 'paplay', 'pw-play', 'aplay'];
+  }
+
+  /// How to get a player, in this platform's terms.
+  static String get playerInstallHint {
+    final cmd = Platform.isMacOS
+        ? 'brew install mpv'
+        : Platform.isWindows
+            ? 'winget install mpv'
+            : 'sudo apt install mpv';
+    return 'No audio player found. Install one with:\n    $cmd';
+  }
+
   static String? get _playerBinary {
-    for (final candidate in ['mpv', 'ffplay', 'paplay', 'pw-play', 'aplay']) {
+    for (final candidate in _playerCandidates) {
       final path = RuntimeEnv.findBinary(candidate);
       if (path != null) return path;
     }
@@ -70,9 +89,7 @@ class MediaPlayerService extends ChangeNotifier {
 
     final binary = _playerBinary;
     if (binary == null) {
-      throw Exception(
-        'No audio player found. Install one with:\n    sudo apt install mpv',
-      );
+      throw Exception(playerInstallHint);
     }
 
     final name = p.basename(binary);
@@ -149,6 +166,12 @@ class MprisControl {
 
   static bool get isAvailable => _busctl != null && Platform.isLinux;
 
+  /// Our own MPRIS entry (see [MprisServer]): never "other" music to list or
+  /// pause, or the sleep timer would pause the reader through the back door.
+  static bool _isSelf(String name) =>
+      name == MprisServer.busSuffix ||
+      name.startsWith('${MprisServer.busSuffix}.');
+
   /// Media players currently running, by bus name suffix (e.g. `spotify`).
   static Future<List<String>> players() async {
     final playerctl = RuntimeEnv.findBinary('playerctl');
@@ -159,7 +182,7 @@ class MprisControl {
           return (result.stdout as String)
               .split('\n')
               .map((s) => s.trim())
-              .where((s) => s.isNotEmpty)
+              .where((s) => s.isNotEmpty && !_isSelf(s))
               .toList();
         }
       } catch (_) {}
@@ -176,7 +199,7 @@ class MprisControl {
           in RegExp(r'org\.mpris\.MediaPlayer2\.([A-Za-z0-9_.-]+)')
               .allMatches(result.stdout as String)) {
         final name = match.group(1);
-        if (name != null) names.add(name);
+        if (name != null && !_isSelf(name)) names.add(name);
       }
       return names.toList()..sort();
     } catch (_) {
@@ -238,7 +261,9 @@ class MprisControl {
   static Future<void> next([String? player]) => _command('next', player);
   static Future<void> previous([String? player]) => _command('previous', player);
 
-  static String get installHint =>
-      'Install playerctl to control Spotify and other players:\n'
-      '    sudo apt install playerctl';
+  static String get installHint => Platform.isLinux
+      ? 'Install playerctl to control Spotify and other players:\n'
+          '    sudo apt install playerctl'
+      // MPRIS is a Linux D-Bus interface; there is nothing to install elsewhere.
+      : 'Controlling other media players is available on Linux only.';
 }

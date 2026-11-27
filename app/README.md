@@ -383,7 +383,10 @@ EPUB in memory, and provider tests assert that requests *don't* happen.
 - **Mobile is unverified.** Nothing has been built for Android or iOS. Piper,
   Tesseract and Ollama are all subprocesses and cannot run there — a phone would
   get the system voice, no OCR, and cloud-only AI.
-- **No audio export**, background playback, or sleep timer.
+- **Audiobook export needs Piper**, so it is unavailable on macOS until
+  Piper's macOS build works.
+- **Media keys work on Linux only** (MPRIS). macOS and Windows have the tray
+  menu and keyboard shortcuts instead.
 - **Markdown renders as raw text** (`## Heading` appears literally).
 - **Duplicate titles are indistinguishable** in shelves and search results.
 - **Night mode inverts photographs** along with text.

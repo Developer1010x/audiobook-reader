@@ -38,3 +38,6 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+
+# Local planning notes — never committed
+/plan.md
