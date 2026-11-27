@@ -114,7 +114,7 @@ modules:
     sources:
       - type: git
         url: https://github.com/Developer1010x/audiobook-reader.git
-        tag: v1.0.0
+        tag: v1.1.0
       # Flathub builds have no network: the Flutter SDK and the pub cache must
       # both be provided as pinned sources. Generate the pub sources with
       # flatpak-flutter (https://github.com/TheAppgineer/flatpak-flutter).
