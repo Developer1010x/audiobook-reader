@@ -73,6 +73,7 @@ jobs:
             clang cmake ninja-build pkg-config \
             libgtk-3-dev liblzma-dev \
             libsecret-1-dev libjsoncpp-dev \
+            libayatana-appindicator3-dev \
             lld file desktop-file-utils
 
       - name: Build
@@ -161,7 +162,7 @@ jobs:
           Priority: optional
           Architecture: amd64
           Maintainer: S Prajwall Narayana <sprajwalln@gmail.com>
-          Depends: libgtk-3-0, libsecret-1-0, libjsoncpp25 | libjsoncpp-dev
+          Depends: libgtk-3-0, libsecret-1-0, libjsoncpp25 | libjsoncpp-dev, libayatana-appindicator3-1
           Recommends: tesseract-ocr, speech-dispatcher, speech-dispatcher-espeak-ng
           Description: Private reader and audiobook player for your own library
            Read, listen to and study your own books. PDF, EPUB, Markdown and text,
@@ -356,6 +357,7 @@ jobs:
             Local AI is optional and off by default — install Ollama from
             https://ollama.com to enable it.
 
-            For a neural voice rather than the robotic system one, install Piper
-            and a voice — the app shows the exact commands for your platform in
-            Settings.
+            On Linux and Windows, for a neural voice rather than the robotic
+            system one, install Piper and a voice — the app shows the exact
+            commands. macOS reads aloud with the system voice. Exporting a book
+            as an .m4b audiobook also needs ffmpeg.

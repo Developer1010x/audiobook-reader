@@ -46,10 +46,12 @@ dependencies:
   archive: ^4.0.9
   html: ^0.15.6
   xml: ^7.0.1
-  audio_service: ^0.18.19
-  just_audio: ^0.10.6
-  audio_session: ^0.2.4
   flutter_markdown_plus: ^1.0.12
+  # Desktop tray icon. Held below 0.6, which rewrote the plugin on a new
+  # native layer and from 0.7 needs a newer Flutter than the CI pin.
+  tray_manager: ^0.5.3
+  # Pure-Dart D-Bus, for exposing playback over MPRIS on Linux (media keys).
+  dbus: ^0.8.1
 
 dev_dependencies:
   flutter_test:
@@ -72,6 +74,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # Tray icon: .ico for Windows, PNG for macOS and Linux.
+  assets:
+    - assets/tray/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

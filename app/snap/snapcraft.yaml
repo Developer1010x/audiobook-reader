@@ -76,9 +76,11 @@ parts:
       - liblzma-dev
       - libsecret-1-dev
       - libjsoncpp-dev
+      - libayatana-appindicator3-dev
     stage-packages:
       - libsecret-1-0
       - libjsoncpp25
+      - libayatana-appindicator3-1
 
   # Speech. Bundled so a fresh install can read aloud immediately.
   speech:

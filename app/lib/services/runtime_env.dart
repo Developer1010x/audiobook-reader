@@ -130,7 +130,25 @@ class RuntimeEnv {
         if (File(candidate).existsSync()) return candidate;
       }
     }
+    // Windows installers usually put a tool in its own Program Files folder
+    // without touching PATH — winget's UB-Mannheim Tesseract does exactly
+    // that, so the app's own install hint would still read as "missing".
+    if (Platform.isWindows) {
+      for (final dir in windowsInstallDirs) {
+        final candidate = p.join(dir, exe);
+        if (File(candidate).existsSync()) return candidate;
+      }
+    }
     return null;
+  }
+
+  /// Known per-tool install folders on Windows that are not added to PATH.
+  static List<String> get windowsInstallDirs {
+    final env = Platform.environment;
+    return [
+      for (final root in [env['ProgramFiles'], env['ProgramFiles(x86)']])
+        if (root != null && root.isNotEmpty) p.join(root, 'Tesseract-OCR'),
+    ];
   }
 
   /// Homebrew's bin directories: Apple silicon first, then Intel.

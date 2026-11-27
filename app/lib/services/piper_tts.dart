@@ -226,15 +226,24 @@ class PiperTts {
           r'    cd $env:LOCALAPPDATA\piper-voices' '\n'
           r'    $env:LOCALAPPDATA\piper-venv\Scripts\python -m piper.download_voices en_US-lessac-medium';
     }
-    final data = Platform.isMacOS
-        ? r'~/Library/Application Support'
-        : r'~/.local/share';
+    // The macOS pip wheel (piper-tts 1.3.0 and 1.8.0, checked 2026-11-27)
+    // cannot run: its espeak-ng bridge looks for phontab at the CI machine's
+    // build path and ignores the bundled data. Sending a Mac user through those
+    // steps would end in a crash, so only point at a binary they already have.
+    if (Platform.isMacOS) {
+      return 'Read-aloud uses the system voice. Choose or download voices in '
+          'System Settings → Accessibility → Spoken Content.\n'
+          // A Finder-launched app never sees shell exports like PIPER_BIN, so
+          // name a path _binaryCandidates already checks.
+          'If you have a working Piper build, put it at /usr/local/bin/piper '
+          'and .onnx voices in ~/Library/Application Support/piper-voices.';
+    }
     return 'Piper gives a far better voice than the system one. Install it '
         'with:\n'
-        '    uv venv $data/piper-venv\n'
-        '    VIRTUAL_ENV=$data/piper-venv uv pip install piper-tts\n'
-        '    mkdir -p $data/piper-voices && cd $data/piper-voices && \\\n'
-        '      $data/piper-venv/bin/python -m piper.download_voices en_US-lessac-medium';
+        '    uv venv ~/.local/share/piper-venv\n'
+        '    VIRTUAL_ENV=~/.local/share/piper-venv uv pip install piper-tts\n'
+        '    mkdir -p ~/.local/share/piper-voices && cd ~/.local/share/piper-voices && \\\n'
+        '      ~/.local/share/piper-venv/bin/python -m piper.download_voices en_US-lessac-medium';
   }
 
   /// Synthesise [text] to a WAV file and return it.

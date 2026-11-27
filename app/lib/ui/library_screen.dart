@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../models/library_node.dart';
 import '../services/library_service.dart';
+import '../services/library_watcher.dart';
 import '../services/settings_service.dart';
 import '../services/recommender.dart';
 import '../services/stats_service.dart';
@@ -61,6 +62,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool get _searching => _query.trim().isNotEmpty;
   bool get _atRoot => _stack.isEmpty;
 
+  LibraryWatcher? _watcher;
+
   @override
   void initState() {
     super.initState();
@@ -68,20 +71,41 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (path != null) _scan(path);
   }
 
-  Future<void> _scan(String path) async {
+  @override
+  void dispose() {
+    unawaited(_watcher?.close());
+    super.dispose();
+  }
+
+  /// Watch [path] for added or removed books, replacing any earlier watch.
+  void _watch(String path) {
+    if (_watcher?.root == path) return;
+    unawaited(_watcher?.close());
+    _watcher = LibraryWatcher(path, onChanged: () {
+      if (mounted && !_loading) unawaited(_scan(path, quiet: true));
+    });
+    unawaited(_watcher!.start());
+  }
+
+  /// [quiet] is the watcher's rescan: no spinner, and the folder the user is
+  /// browsing stays open, since nothing they did asked for the view to reset.
+  Future<void> _scan(String path, {bool quiet = false}) async {
     setState(() {
-      _loading = true;
+      if (!quiet) _loading = true;
       _error = null;
     });
     try {
       final books = await LibraryService.scan(path);
       if (!mounted) return;
       setState(() {
+        final open = [for (final f in _stack) f.path];
         _all = books;
         _root = LibraryFolder.build(books, path);
         _stack.clear();
+        if (quiet) _stack.addAll(_reopen(_root!, open));
         _loading = false;
       });
+      _watch(path);
       unawaited(_recompute());
     } catch (e) {
       if (!mounted) return;
@@ -90,6 +114,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _loading = false;
       });
     }
+  }
+
+  /// The folders along [paths] in the rebuilt tree, stopping at the first one
+  /// that no longer exists (its last book was removed).
+  static List<LibraryFolder> _reopen(LibraryFolder root, List<String> paths) {
+    final found = <LibraryFolder>[];
+    var current = root;
+    for (final path in paths) {
+      final next = current.folders.where((f) => f.path == path).firstOrNull;
+      if (next == null) break;
+      found.add(next);
+      current = next;
+    }
+    return found;
   }
 
   Future<void> _pickFolder() async {

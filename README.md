@@ -33,12 +33,15 @@ That constraint drives the whole design — see [The privacy boundary](#the-priv
 | | |
 |---|---|
 | **Reads any format you own** | PDF with real page rendering, EPUB parsed from the OPF spine, Markdown rendered properly, plain text — all paginated so page numbers, resume and page ranges behave identically |
-| **Reads aloud, well** | Neural speech via Piper, chunked and pipelined so audio starts in about a second rather than ten; espeak-ng as a fallback |
+| **Reads aloud, well** | Neural speech via Piper on Linux and Windows (the system voice on macOS, where Piper's pip build is currently broken upstream), chunked and pipelined so audio starts in about a second rather than ten; espeak-ng as a fallback |
 | **Follows along** | Sentence-level highlighting with auto-scroll, and tapping any sentence starts reading from there |
 | **Handles scanned books** | Pages with no embedded text are detected and OCRed with Tesseract at 300 dpi, then cached so it never happens twice |
 | **Keeps playing** | Background audio with lock-screen and headset controls, a sleep timer that stops on a sentence boundary, and a Car Mode built for glanceable use |
 | **Studies with you** | Five AI modes — summary, learning, interview prep, flashcards, key terms — over four output lengths and six providers |
 | **Remembers** | Bookmarks, highlights and notes with Markdown export; resume position per book; reading streaks and a 14-day sparkline |
+| **Exports audiobooks** | Any book to one `.m4b` with chapter markers, rendered by Piper and encoded by ffmpeg |
+| **Fixes pronunciation** | A list of names and terms the voice gets wrong, applied to everything it says |
+| **Keyboard-first on desktop** | Space play/pause, ←/→ sentence, ↑/↓ speed, PgUp/PgDn page, ⌘/Ctrl+B bookmark, ⌘/Ctrl+F search, Esc back — the same keys as Car Mode |
 | **Looks up words** | Built-in dictionary, no round trip to a browser |
 
 Textbooks and storybooks are told apart by a local text classifier, and the AI layer is
@@ -109,8 +112,10 @@ Packaging manifests for **Flatpak** and **Snap** live in `app/packaging/` and `a
 Every one of these is optional. The app degrades gracefully and tells you exactly what to
 install when a feature needs something that is missing.
 
-The commands below are for Linux. On macOS and Windows, Settings shows the exact Piper
-commands for your platform; for OCR use `brew install tesseract` (macOS) or
+The commands below are for Linux. On Windows, Settings shows the exact Piper
+commands; on macOS read-aloud uses the system voice, because Piper's pip build
+currently crashes there (its espeak-ng data path is baked in at build time). For
+audiobook export install ffmpeg. For OCR use `brew install tesseract` (macOS) or
 `winget install UB-Mannheim.TesseractOCR` (Windows), and get Ollama from
 [ollama.com](https://ollama.com).
 

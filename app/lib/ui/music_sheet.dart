@@ -105,8 +105,7 @@ class _MusicSheetState extends State<MusicSheet> {
           if (!MediaPlayerService.canPlayFiles)
             _Hint(
               icon: Icons.warning_amber_outlined,
-              text: 'No audio player found. Install one with:\n'
-                  '    sudo apt install mpv',
+              text: MediaPlayerService.playerInstallHint,
             )
           else ...[
             Card(

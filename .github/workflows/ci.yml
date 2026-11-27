@@ -82,7 +82,7 @@ jobs:
           sudo apt-get install -y \
             clang cmake ninja-build pkg-config \
             libgtk-3-dev liblzma-dev libsecret-1-dev libjsoncpp-dev lld \
-            desktop-file-utils
+            libayatana-appindicator3-dev desktop-file-utils
 
       - name: Fetch packages
         working-directory: app
